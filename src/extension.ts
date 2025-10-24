@@ -2,6 +2,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 
 interface ScenarioInfo {
   name: string;
@@ -288,25 +290,33 @@ class CucumberTestController {
         const scenarioLine = parseInt(parts[2]); // scenario line number
         const exampleLine = parseInt(parts[4]); // example line number
         console.log(`Running example at scenario line ${scenarioLine}, example line ${exampleLine} for file ${uri.fsPath}`);
-        await this.executeTest(uri, scenarioLine, exampleLine);
+        const exitCode = await runSelectedTestAndWait(uri, scenarioLine, exampleLine, (data) => run.appendOutput(data, undefined, testItem));
+        if (exitCode === 0) {
+          run.passed(testItem);
+        } else {
+          run.failed(testItem, new vscode.TestMessage(`Test failed with exit code ${exitCode}`));
+        }
       } else if (testItem.id.includes(':scenario:')) {
         // This is a scenario
         const parts = testItem.id.split(':scenario:');
         const lineNumber = parseInt(parts[1]);
         console.log(`Running scenario at line ${lineNumber} for file ${uri.fsPath}`);
-        await this.executeTest(uri, lineNumber);
+        const exitCode = await runSelectedTestAndWait(uri, lineNumber, undefined, (data) => run.appendOutput(data, undefined, testItem));
+        if (exitCode === 0) {
+          run.passed(testItem);
+        } else {
+          run.failed(testItem, new vscode.TestMessage(`Test failed with exit code ${exitCode}`));
+        }
       } else {
         // This is a feature file
         console.log(`Running entire feature file ${uri.fsPath}`);
-        await this.executeTest(uri);
+        const exitCode = await runSelectedTestAndWait(uri, undefined, undefined, (data) => run.appendOutput(data, undefined, testItem));
+        if (exitCode === 0) {
+          run.passed(testItem);
+        } else {
+          run.failed(testItem, new vscode.TestMessage(`Test failed with exit code ${exitCode}`));
+        }
       }
-      
-      // Show test as running - user will see results in terminal
-      vscode.window.showInformationMessage(`Test started for ${testItem.label}. Check terminal for results.`);
-      
-      // Wait 2 seconds to show "running" state, then mark as passed
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      run.passed(testItem);
       
     } catch (error) {
       console.error('Test execution error:', error);
@@ -669,6 +679,45 @@ async function runSelectedTest(uri: vscode.Uri, lineNumber?: number, exampleLine
 }
 
 /**
+ * Runs the selected test and waits for the Java process to finish. Streams output via the provided callback.
+ */
+async function runSelectedTestAndWait(
+  uri: vscode.Uri,
+  lineNumber?: number,
+  exampleLine?: number,
+  onOutput?: (chunk: string) => void
+): Promise<number> {
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+  if (!workspaceFolder) {
+    vscode.window.showErrorMessage('Feature file is not inside a workspace.');
+    return 1;
+  }
+
+  const projectRoot = workspaceFolder.uri.fsPath;
+  const relativePath = path.relative(projectRoot, uri.fsPath);
+
+  try {
+    const gluePath = await findGluePath(projectRoot);
+    if (!gluePath) {
+      const userInput = await vscode.window.showInputBox({
+        prompt: 'Enter glue path for steps directory (e.g. org.example.steps)',
+        placeHolder: 'org.example.steps'
+      });
+      if (!userInput) {
+        vscode.window.showErrorMessage('Glue path not specified, operation cancelled.');
+        return 1;
+      }
+      return await runCucumberTestWithResult(projectRoot, relativePath, userInput, lineNumber, exampleLine, onOutput);
+    } else {
+      return await runCucumberTestWithResult(projectRoot, relativePath, gluePath, lineNumber, exampleLine, onOutput);
+    }
+  } catch (error: any) {
+    vscode.window.showErrorMessage(`Error: ${error.message || 'Unknown error'}`);
+    return 1;
+  }
+}
+
+/**
  * Finds the scenario at the given line number
  */
 function findScenarioAtLine(document: vscode.TextDocument, line: number): ScenarioInfo | null {
@@ -927,6 +976,103 @@ public class CucumberRunner {
   // Compile and run the Java file
   terminal.sendText(`cd "${projectRoot}" && javac -cp "target/test-classes:target/classes:$(mvn dependency:build-classpath -q -Dmdep.outputFile=/dev/stdout)" ${javaFilePath} && java -cp "target/test-classes:target/classes:$(mvn dependency:build-classpath -q -Dmdep.outputFile=/dev/stdout):${path.dirname(javaFilePath)}" CucumberRunner`);
   terminal.show();
+}
+
+/**
+ * Runs the Cucumber test via child_process and returns the exit code.
+ */
+async function runCucumberTestWithResult(
+  projectRoot: string,
+  featurePath: string,
+  gluePath: string,
+  lineNumber?: number,
+  exampleLineNumber?: number,
+  onOutput?: (chunk: string) => void
+): Promise<number> {
+  // Build cucumber path with optional line specifiers
+  let cucumberPath = featurePath.replace(/\\/g, '/');
+  if (lineNumber && lineNumber > 0) {
+    if (exampleLineNumber && exampleLineNumber > 0) {
+      cucumberPath += ':' + exampleLineNumber;
+    } else {
+      cucumberPath += ':' + lineNumber;
+    }
+  }
+
+  const tmpDir = path.join(projectRoot, 'target', 'tmp');
+  if (!fs.existsSync(tmpDir)) {
+    fs.mkdirSync(tmpDir, { recursive: true });
+  }
+
+  const javaFilePath = path.join(tmpDir, 'CucumberRunner.java');
+  const javaCode = `
+import io.cucumber.core.cli.Main;
+
+public class CucumberRunner {
+  public static void main(String[] args) {
+    System.out.println("Cucumber feature: ${cucumberPath}");
+    String[] cucumberArgs = new String[] {
+      "${cucumberPath}",
+      "--glue", "${gluePath}",
+      "--plugin", "pretty"
+    };
+    Main.main(cucumberArgs);
+  }
+}`;
+  fs.writeFileSync(javaFilePath, javaCode);
+
+  const cpFile = path.join(tmpDir, 'classpath.txt');
+
+  const execFilePromise = (file: string, args: string[], cwd: string) => new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
+    const child = execFile(file, args, { cwd, env: { ...process.env, MAVEN_OPTS: `${process.env.MAVEN_OPTS || ''}` } }, (error, stdout, stderr) => {
+      resolve({ stdout, stderr, code: error ? (typeof (error as any).code === 'number' ? (error as any).code : 1) : 0 });
+    });
+  });
+
+  // 1) Build classpath via Maven
+  const mvnArgs = ['-q', '-DincludeScope=test', '-DskipTests', 'dependency:build-classpath', `-Dmdep.outputFile=${cpFile}`];
+  const mvnRes = await execFilePromise('mvn', mvnArgs, projectRoot);
+  if (onOutput) {
+    if (mvnRes.stdout) onOutput(mvnRes.stdout);
+    if (mvnRes.stderr) onOutput(mvnRes.stderr);
+  }
+  if (mvnRes.code !== 0) {
+    return mvnRes.code;
+  }
+
+  // Read deps classpath
+  const depsClasspathRaw = fs.existsSync(cpFile) ? fs.readFileSync(cpFile, 'utf8').trim() : '';
+  const delimiter = path.delimiter;
+  const testClasses = path.join(projectRoot, 'target', 'test-classes');
+  const mainClasses = path.join(projectRoot, 'target', 'classes');
+  const baseClasspath = [testClasses, mainClasses].join(delimiter);
+  const fullClasspath = depsClasspathRaw ? [baseClasspath, depsClasspathRaw].join(delimiter) : baseClasspath;
+
+  // 2) Compile runner
+  const javacArgs = ['-cp', fullClasspath, '-d', tmpDir, javaFilePath];
+  const javacRes = await execFilePromise('javac', javacArgs, projectRoot);
+  if (onOutput) {
+    if (javacRes.stdout) onOutput(javacRes.stdout);
+    if (javacRes.stderr) onOutput(javacRes.stderr);
+  }
+  if (javacRes.code !== 0) {
+    return javacRes.code;
+  }
+
+  // 3) Run tests and stream output
+  const runCp = [fullClasspath, tmpDir].join(delimiter);
+  const child = spawn('java', ['-cp', runCp, 'CucumberRunner'], { cwd: projectRoot });
+  return await new Promise<number>((resolve) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (onOutput) onOutput(chunk.toString());
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (onOutput) onOutput(chunk.toString());
+    });
+    child.on('close', (code) => {
+      resolve(typeof code === 'number' ? code : 1);
+    });
+  });
 }
 
 export function deactivate() {} 
