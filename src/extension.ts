@@ -643,36 +643,40 @@ async function runSelectedTest(uri: vscode.Uri, lineNumber?: number, exampleLine
   console.log(`Example line: ${exampleLine || 'all scenarios'}`);
   
   try {
-    // Scan the project to find the steps directory
-    const gluePath = await findGluePath(workspaceFolder.uri.fsPath);
-    
-    if (!gluePath) {
-      // If glue path is not found, ask the user
+    // 1) Try to resolve glue(s) from JUnit Suite runner annotations for this feature
+    const gluePathsFromRunner = await findGluePathsForFeature(workspaceFolder.uri.fsPath, relativePath);
+
+    // 2) Fallback to auto-detect single glue path by scanning steps directory
+    const fallbackGlue = await findGluePath(workspaceFolder.uri.fsPath);
+
+    const glueToUse: string[] | null = gluePathsFromRunner && gluePathsFromRunner.length > 0
+      ? gluePathsFromRunner
+      : (fallbackGlue ? [fallbackGlue] : null);
+
+    if (!glueToUse) {
       const userInput = await vscode.window.showInputBox({
         prompt: 'Enter glue path for steps directory (e.g. org.example.steps)',
         placeHolder: 'org.example.steps'
       });
-      
       if (!userInput) {
         vscode.window.showErrorMessage('Glue path not specified, operation cancelled.');
         return false;
       }
-      
-      runCucumberTest(workspaceFolder.uri.fsPath, relativePath, userInput, terminal, lineNumber, exampleLine);
-    } else {
-      // If glue path is found, run directly
-      let message = '';
-      if (runMode === 'feature') {
-        message = `Running feature file with glue path "${gluePath}"`;
-      } else if (runMode === 'scenario') {
-        message = `Running scenario at line ${lineNumber} with glue path "${gluePath}"`;
-      } else if (runMode === 'example') {
-        message = `Running example at line ${lineNumber}:${exampleLine} with glue path "${gluePath}"`;
-      }
-      
-      vscode.window.showInformationMessage(message);
-      runCucumberTest(workspaceFolder.uri.fsPath, relativePath, gluePath, terminal, lineNumber, exampleLine);
+      runCucumberTest(workspaceFolder.uri.fsPath, relativePath, [userInput], terminal, lineNumber, exampleLine);
+      return;
     }
+
+    let message = '';
+    const glueMsg = glueToUse.join(', ');
+    if (runMode === 'feature') {
+      message = `Running feature file with glue path(s) "${glueMsg}"`;
+    } else if (runMode === 'scenario') {
+      message = `Running scenario at line ${lineNumber} with glue path(s) "${glueMsg}"`;
+    } else if (runMode === 'example') {
+      message = `Running example at line ${lineNumber}:${exampleLine} with glue path(s) "${glueMsg}"`;
+    }
+    vscode.window.showInformationMessage(message);
+    runCucumberTest(workspaceFolder.uri.fsPath, relativePath, glueToUse, terminal, lineNumber, exampleLine);
   } catch (error: any) {
     vscode.window.showErrorMessage(`Error: ${error.message || 'Unknown error'}`);
   }
@@ -692,13 +696,17 @@ async function runSelectedTestAndWait(
     vscode.window.showErrorMessage('Feature file is not inside a workspace.');
     return 1;
   }
-
   const projectRoot = workspaceFolder.uri.fsPath;
   const relativePath = path.relative(projectRoot, uri.fsPath);
 
   try {
-    const gluePath = await findGluePath(projectRoot);
-    if (!gluePath) {
+    const gluePathsFromRunner = await findGluePathsForFeature(projectRoot, relativePath);
+    const fallbackGlue = await findGluePath(projectRoot);
+    const glueToUse: string[] | null = gluePathsFromRunner && gluePathsFromRunner.length > 0
+      ? gluePathsFromRunner
+      : (fallbackGlue ? [fallbackGlue] : null);
+
+    if (!glueToUse) {
       const userInput = await vscode.window.showInputBox({
         prompt: 'Enter glue path for steps directory (e.g. org.example.steps)',
         placeHolder: 'org.example.steps'
@@ -707,9 +715,9 @@ async function runSelectedTestAndWait(
         vscode.window.showErrorMessage('Glue path not specified, operation cancelled.');
         return 1;
       }
-      return await runCucumberTestWithResult(projectRoot, relativePath, userInput, lineNumber, exampleLine, onOutput);
+      return await runCucumberTestWithResult(projectRoot, relativePath, [userInput], lineNumber, exampleLine, onOutput);
     } else {
-      return await runCucumberTestWithResult(projectRoot, relativePath, gluePath, lineNumber, exampleLine, onOutput);
+      return await runCucumberTestWithResult(projectRoot, relativePath, glueToUse, lineNumber, exampleLine, onOutput);
     }
   } catch (error: any) {
     vscode.window.showErrorMessage(`Error: ${error.message || 'Unknown error'}`);
@@ -853,6 +861,110 @@ async function findGluePath(projectRoot: string): Promise<string | null> {
 }
 
 /**
+ * Parses JUnit Platform Suite runner classes to resolve glue path(s) for a given feature file.
+ * Matches by reading @ConfigurationParameter annotations with FEATURES_PROPERTY_NAME and GLUE_PROPERTY_NAME.
+ */
+async function findGluePathsForFeature(projectRoot: string, relativeFeaturePath: string): Promise<string[]> {
+  const testJavaDir = path.join(projectRoot, 'src', 'test', 'java');
+  const testResourcesDir = path.join(projectRoot, 'src', 'test', 'resources');
+
+  if (!fs.existsSync(testJavaDir)) return [];
+
+  const javaFiles: string[] = [];
+
+  const walk = (dir: string) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile() && entry.name.endsWith('.java')) {
+        javaFiles.push(full);
+      }
+    }
+  };
+  walk(testJavaDir);
+
+  interface RunnerCfg {
+    file: string;
+    glue: string[];
+    featureMatchers: string[]; // relative paths or directories from project root
+  }
+
+  const runners: RunnerCfg[] = [];
+
+  const glueRegex = /@ConfigurationParameter\s*\(\s*key\s*=\s*(?:[\w\.]*GLUE_PROPERTY_NAME)\s*,\s*value\s*=\s*("([^"]+)"|'([^']+)')\s*\)/g;
+  const featuresRegex = /@ConfigurationParameter\s*\(\s*key\s*=\s*(?:[\w\.]*FEATURES_PROPERTY_NAME)\s*,\s*value\s*=\s*("([^"]+)"|'([^']+)')\s*\)/g;
+
+  const toArray = (val: string): string[] => val.split(',').map(s => s.trim()).filter(Boolean);
+
+  for (const file of javaFiles) {
+    let txt: string;
+    try {
+      txt = fs.readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+
+    const glueMatches: string[] = [];
+    const featureVals: string[] = [];
+
+    let m: RegExpExecArray | null;
+    while ((m = glueRegex.exec(txt)) !== null) {
+      const v = (m[2] || m[3] || '').trim();
+      glueMatches.push(...toArray(v));
+    }
+    while ((m = featuresRegex.exec(txt)) !== null) {
+      const v = (m[2] || m[3] || '').trim();
+      featureVals.push(...toArray(v));
+    }
+
+    if (featureVals.length === 0 || glueMatches.length === 0) continue;
+
+    const featureMatchers: string[] = [];
+    for (const f of featureVals) {
+      const noPrefix = f.startsWith('classpath:') ? f.substring('classpath:'.length) : f;
+      const normalized = noPrefix.replace(/\\/g, '/');
+      const absCandidate = path.join(testResourcesDir, normalized);
+
+      if (absCandidate.endsWith('.feature')) {
+        featureMatchers.push(path.relative(projectRoot, absCandidate).replace(/\\/g, '/'));
+      } else {
+        // treat as directory matcher; ensure trailing slash for startsWith checks
+        let relDir = path.relative(projectRoot, absCandidate).replace(/\\/g, '/');
+        if (!relDir.endsWith('/')) relDir += '/';
+        featureMatchers.push(relDir);
+      }
+    }
+
+    runners.push({ file, glue: glueMatches, featureMatchers });
+  }
+
+  // Choose the most specific runner whose features match this file
+  const relPathUnix = relativeFeaturePath.replace(/\\/g, '/');
+  let best: { glue: string[]; score: number } | null = null;
+
+  for (const r of runners) {
+    for (const matcher of r.featureMatchers) {
+      if (matcher.endsWith('.feature')) {
+        if (relPathUnix === matcher) {
+          const score = matcher.length;
+          if (!best || score > best.score) best = { glue: r.glue, score };
+        }
+      } else {
+        // directory prefix match
+        if (relPathUnix.startsWith(matcher)) {
+          const score = matcher.length;
+          if (!best || score > best.score) best = { glue: r.glue, score };
+        }
+      }
+    }
+  }
+
+  return best ? Array.from(new Set(best.glue)) : [];
+}
+
+/**
  * Recursively searches for the steps directory
  */
 async function findStepsDir(dir: string): Promise<string | null> {
@@ -925,7 +1037,7 @@ async function findStepsDir(dir: string): Promise<string | null> {
 function runCucumberTest(
   projectRoot: string, 
   featurePath: string, 
-  gluePath: string, 
+  gluePaths: string[] | string, 
   terminal: vscode.Terminal,
   lineNumber?: number,
   exampleLineNumber?: number
@@ -948,7 +1060,13 @@ function runCucumberTest(
     console.log(`Cucumber path (feature): ${cucumberPath}`);
   }
   
-  // Java code to find the classpath and package name
+  // Prepare glue arguments (supports multiple --glue values)
+  const glueArray = Array.isArray(gluePaths) ? gluePaths : [gluePaths];
+  const glueArgsJava = glueArray
+    .flatMap(g => ['"--glue"', `"${g}"`])
+    .join(', ');
+
+  // Java code to find the classpath and run cucumber
   const javaCode = `
 import io.cucumber.core.cli.Main;
 
@@ -957,7 +1075,7 @@ public class CucumberRunner {
     System.out.println("Cucumber feature: ${cucumberPath}");
     String[] cucumberArgs = new String[] {
       "${cucumberPath}",
-      "--glue", "${gluePath}",
+      ${glueArgsJava}${glueArgsJava ? ',' : ''}
       "--plugin", "pretty"
     };
     Main.main(cucumberArgs);
@@ -984,7 +1102,7 @@ public class CucumberRunner {
 async function runCucumberTestWithResult(
   projectRoot: string,
   featurePath: string,
-  gluePath: string,
+  gluePaths: string[],
   lineNumber?: number,
   exampleLineNumber?: number,
   onOutput?: (chunk: string) => void
@@ -1005,6 +1123,9 @@ async function runCucumberTestWithResult(
   }
 
   const javaFilePath = path.join(tmpDir, 'CucumberRunner.java');
+  const glueArgsJava = (gluePaths || [])
+    .flatMap(g => ['"--glue"', `"${g}"`])
+    .join(', ');
   const javaCode = `
 import io.cucumber.core.cli.Main;
 
@@ -1013,7 +1134,7 @@ public class CucumberRunner {
     System.out.println("Cucumber feature: ${cucumberPath}");
     String[] cucumberArgs = new String[] {
       "${cucumberPath}",
-      "--glue", "${gluePath}",
+      ${glueArgsJava}${glueArgsJava ? ',' : ''}
       "--plugin", "pretty"
     };
     Main.main(cucumberArgs);
