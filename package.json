@@ -2,7 +2,7 @@
   "name": "cucumber-java-easy-runner",
   "displayName": "Cucumber Java Easy Runner",
   "description": "VS Code extension for easily running Cucumber Feature files in Java projects",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "HakkiEtem",
   "author": {
     "name": "Hakki Etem"

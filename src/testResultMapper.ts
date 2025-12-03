@@ -276,56 +276,108 @@ export async function markChildrenFromResults(
     }
 
     const scenarioResults = await parseResultFileForFeature(resultFile, featureItem.uri);
+    const scenarioAggregates = new Map<string, { item: vscode.TestItem; passed: boolean; message?: vscode.TestMessage; matched: boolean }>();
+
+    featureItem.children.forEach(child => {
+      scenarioAggregates.set(child.id, { item: child, passed: true, matched: false });
+    });
 
     for (const scenarioResult of scenarioResults) {
-      let matched = false;
+      let matchedScenario: vscode.TestItem | undefined;
+      let matchedExample: vscode.TestItem | undefined;
 
       featureItem.children.forEach(child => {
+        if (matchedScenario) {
+          return;
+        }
         const childIdParts = child.id.split(':scenario:');
         if (childIdParts.length > 1) {
           const lineNumberPart = childIdParts[1].split(':')[0];
           const childScenarioLine = parseInt(lineNumberPart, 10);
 
           if (childScenarioLine === scenarioResult.line) {
-            matched = true;
-
-            if (scenarioResult.passed) {
-              run.passed(child);
-            } else if (scenarioResult.failedStep) {
-              const isScenarioLevelError =
-                scenarioResult.failedStep.name.includes('Hook Failed') ||
-                scenarioResult.failedStep.name.includes('Scenario Setup Error') ||
-                scenarioResult.failedStep.name.includes('Empty Scenario');
-
-              const message = new vscode.TestMessage(
-                `${scenarioResult.failedStep.name}\n\n${scenarioResult.failedStep.errorMessage}`
-              );
-
-              if (child.uri) {
-                if (isScenarioLevelError) {
-                  message.location = new vscode.Location(
-                    child.uri,
-                    new vscode.Position((scenarioResult.line || 1) - 1, 0)
-                  );
-                } else {
-                  message.location = new vscode.Location(
-                    child.uri,
-                    new vscode.Position((scenarioResult.failedStep.line || scenarioResult.line || 1) - 1, 0)
-                  );
-                }
-              }
-              run.failed(child, message);
-            } else {
-              run.failed(child, new vscode.TestMessage('Scenario failed'));
-            }
+            matchedScenario = child;
+            matchedExample = child;
+            return;
           }
+
+          child.children.forEach(exampleChild => {
+            if (matchedScenario) {
+              return;
+            }
+            const exampleParts = exampleChild.id.split(':example:');
+            if (exampleParts.length > 1) {
+              const exampleLine = parseInt(exampleParts[1], 10);
+              if (exampleLine === scenarioResult.line) {
+                matchedScenario = child;
+                matchedExample = exampleChild;
+              }
+            }
+          });
         }
       });
 
-      if (!matched) {
+      if (!matchedScenario || !matchedExample) {
         logger.debug(`WARNING: No matching child found for scenario at line ${scenarioResult.line}`);
+        continue;
+      }
+
+      let message: vscode.TestMessage | undefined;
+      if (!scenarioResult.passed) {
+        if (scenarioResult.failedStep) {
+          message = new vscode.TestMessage(
+            `${scenarioResult.failedStep.name}\n\n${scenarioResult.failedStep.errorMessage}`
+          );
+
+          if (matchedExample.uri) {
+            const isScenarioLevelError =
+              scenarioResult.failedStep.name.includes('Hook Failed') ||
+              scenarioResult.failedStep.name.includes('Scenario Setup Error') ||
+              scenarioResult.failedStep.name.includes('Empty Scenario');
+
+            const targetLine = isScenarioLevelError
+              ? (scenarioResult.line || 1) - 1
+              : (scenarioResult.failedStep.line || scenarioResult.line || 1) - 1;
+
+            message.location = new vscode.Location(
+              matchedExample.uri,
+              new vscode.Position(targetLine, 0)
+            );
+          }
+        } else {
+          message = new vscode.TestMessage('Scenario failed');
+        }
+      }
+
+      if (scenarioResult.passed) {
+        run.passed(matchedExample);
+      } else if (message) {
+        run.failed(matchedExample, message);
+      }
+
+      const aggregate = scenarioAggregates.get(matchedScenario.id);
+      if (aggregate) {
+        if (!scenarioResult.passed) {
+          aggregate.passed = false;
+          aggregate.message = message;
+        }
+        aggregate.matched = true;
+        scenarioAggregates.set(matchedScenario.id, aggregate);
       }
     }
+
+    scenarioAggregates.forEach(({ item, passed, message, matched }) => {
+      if (!matched) {
+        return;
+      }
+      if (passed) {
+        run.passed(item);
+      } else if (message) {
+        run.failed(item, message);
+      } else {
+        run.failed(item, new vscode.TestMessage('Scenario failed'));
+      }
+    });
   } catch (error) {
     logger.error('Error marking children from results:', error);
   }

@@ -219,6 +219,8 @@ class CucumberTestController {
     const testItems = request.include || this.gatherAllTests();
     const itemsToRun = this.filterTestItems(testItems);
 
+    this.resetPendingState(itemsToRun, run);
+
     await this.executeBatchTests(itemsToRun, run, isDebug, token);
 
     run.end();
@@ -240,94 +242,12 @@ class CucumberTestController {
     isDebug: boolean,
     token: vscode.CancellationToken
   ) {
-    for (const item of testItems) {
-      run.started(item);
-    }
-
     try {
-      const features: FeatureToRun[] = [];
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-
-      if (!workspaceFolder) {
-        for (const item of testItems) {
-          run.failed(item, new vscode.TestMessage('No workspace folder found'));
-        }
-        return;
-      }
-
       for (const item of testItems) {
-        if (!item.uri) {
-          run.failed(item, new vscode.TestMessage('Test item has no URI'));
-          continue;
+        if (token.isCancellationRequested) {
+          break;
         }
-
-        const relativePath = path.relative(workspaceFolder.uri.fsPath, item.uri.fsPath);
-
-        let lineNumber: number | undefined;
-        let exampleLine: number | undefined;
-
-        const idParts = item.id.split(':scenario:');
-        if (idParts.length > 1) {
-          const afterScenario = idParts[1];
-          const exampleParts = afterScenario.split(':example:');
-
-          lineNumber = parseInt(exampleParts[0], 10);
-
-          if (exampleParts.length > 1) {
-            exampleLine = parseInt(exampleParts[1], 10);
-          }
-        }
-
-        features.push({
-          uri: item.uri,
-          relativePath,
-          lineNumber,
-          exampleLine
-        });
-      }
-
-      if (features.length === 0) {
-        return;
-      }
-
-      logger.info(`Running ${features.length} features in batch mode`);
-      const result = await runCucumberTestBatch(features, isDebug);
-
-      if (result.resultFile) {
-        for (const item of testItems) {
-          if (token.isCancellationRequested) {
-            break;
-          }
-
-          if (item.children.size > 0) {
-            await markChildrenFromResults(item, run, result.resultFile);
-          }
-
-          if (!item.uri) {
-            run.failed(item, new vscode.TestMessage('Test item has no URI'));
-            continue;
-          }
-
-          const featureFailed = await hasFeatureFailures(result.resultFile, item.uri);
-
-          if (featureFailed) {
-            const errorMessages = await getTestErrorMessages(result.resultFile, item.uri);
-            if (errorMessages.length > 0) {
-              run.failed(item, errorMessages);
-            } else {
-              run.failed(item, new vscode.TestMessage('Test failed'));
-            }
-          } else {
-            run.passed(item);
-          }
-        }
-
-        cleanupResultFile(result.resultFile);
-      } else {
-        const consoleType = isDebug ? 'debug console' : 'terminal';
-        for (const item of testItems) {
-          run.failed(item, new vscode.TestMessage(`Test failed. Check ${consoleType} for details.`));
-        }
+        await this.executeSingleTestItem(item, run, isDebug);
       }
     } catch (error) {
       const errorType = isDebug ? 'Debug' : 'Test execution';
@@ -336,6 +256,169 @@ class CucumberTestController {
         run.failed(item, new vscode.TestMessage(`${errorType} failed: ${error}`));
       }
     }
+  }
+
+  private async executeSingleTestItem(
+    item: vscode.TestItem,
+    run: vscode.TestRun,
+    isDebug: boolean
+  ): Promise<boolean> {
+    const isExample = this.isExampleItem(item);
+    const isScenario = this.isScenarioItem(item);
+    const isFeature = !isScenario && !isExample;
+
+    if (isFeature && item.children.size > 0) {
+      run.started(item);
+      let allPassed = true;
+
+      const children: vscode.TestItem[] = [];
+      item.children.forEach(child => children.push(child));
+
+      for (const child of children) {
+        const childPassed = await this.executeSingleTestItem(child, run, isDebug);
+        if (!childPassed) {
+          allPassed = false;
+        }
+      }
+
+      if (allPassed) {
+        run.passed(item);
+      } else {
+        run.failed(item, new vscode.TestMessage('One or more scenarios failed.'));
+      }
+      return allPassed;
+    }
+
+    run.started(item);
+
+    const itemUri = item.uri;
+    if (!itemUri) {
+      run.failed(item, new vscode.TestMessage('Test item has no URI'));
+      return false;
+    }
+
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(itemUri);
+    if (!workspaceFolder) {
+      run.failed(item, new vscode.TestMessage('Test item is outside the workspace'));
+      return false;
+    }
+
+    const descriptors = this.buildFeatureDescriptors(item, workspaceFolder);
+    if (!descriptors) {
+      run.failed(item, new vscode.TestMessage('Unable to resolve feature path'));
+      return false;
+    }
+
+    logger.info(`Running ${descriptors.length} descriptor(s) for ${item.label}`);
+    const result = await runCucumberTestBatch(descriptors, isDebug);
+
+    if (!result.resultFile) {
+      const consoleType = isDebug ? 'debug console' : 'terminal';
+      run.failed(item, new vscode.TestMessage(`Test failed. Check ${consoleType} for details.`));
+      return false;
+    }
+
+    let passed = true;
+    try {
+      if (isScenario) {
+        await markChildrenFromResults(item, run, result.resultFile);
+        const featureFailed = await hasFeatureFailures(result.resultFile, itemUri);
+        if (featureFailed) {
+          const errors = await getTestErrorMessages(result.resultFile, itemUri);
+          if (errors.length > 0) {
+            run.failed(item, errors);
+          } else {
+            run.failed(item, new vscode.TestMessage('Scenario failed'));
+          }
+          passed = false;
+        } else {
+          run.passed(item);
+        }
+      } else {
+        // Example or standalone feature/scenario without descendants
+        const featureItem = this.getFeatureTestItem(item);
+        if (featureItem) {
+          await markChildrenFromResults(featureItem, run, result.resultFile);
+        }
+
+        const featureFailed = await hasFeatureFailures(result.resultFile, itemUri);
+        if (featureFailed) {
+          const errors = await getTestErrorMessages(result.resultFile, itemUri);
+          if (errors.length > 0) {
+            run.failed(item, errors);
+          } else {
+            run.failed(item, new vscode.TestMessage('Test failed'));
+          }
+          passed = false;
+        } else {
+          run.passed(item);
+        }
+      }
+    } finally {
+      cleanupResultFile(result.resultFile);
+    }
+
+    return passed;
+  }
+
+  private buildFeatureDescriptors(
+    item: vscode.TestItem,
+    workspaceFolder: vscode.WorkspaceFolder
+  ): FeatureToRun[] | null {
+    const itemUri = item.uri;
+    if (!itemUri) {
+      return null;
+    }
+
+    const relativePath = path.relative(workspaceFolder.uri.fsPath, itemUri.fsPath);
+
+    const descriptor: FeatureToRun = {
+      uri: itemUri,
+      relativePath
+    };
+
+    if (item.children.size === 0) {
+      const parts = item.id.split(':scenario:');
+      if (parts.length > 1) {
+        const afterScenario = parts[1];
+        const exampleParts = afterScenario.split(':example:');
+
+        const scenarioLine = parseInt(exampleParts[0], 10);
+        if (!Number.isNaN(scenarioLine)) {
+          descriptor.lineNumber = scenarioLine;
+        }
+
+        if (exampleParts.length > 1) {
+          const exampleLine = parseInt(exampleParts[1], 10);
+          if (!Number.isNaN(exampleLine)) {
+            descriptor.exampleLine = exampleLine;
+          }
+        }
+      }
+    }
+
+    return [descriptor];
+  }
+
+  private getFeatureTestItem(item: vscode.TestItem): vscode.TestItem | undefined {
+    if (item.parent) {
+      return item.parent;
+    }
+
+    if (!item.uri) {
+      return undefined;
+    }
+
+    const featureId = path.normalize(item.uri.fsPath);
+    return this.controller.items.get(featureId);
+  }
+
+  private isScenarioItem(item: vscode.TestItem): boolean {
+    return item.id.includes(':scenario:') && !item.id.includes(':example:');
+  }
+
+  private isExampleItem(item: vscode.TestItem): boolean {
+    return item.id.includes(':example:');
   }
 
   private filterTestItems(items: readonly vscode.TestItem[]): vscode.TestItem[] {
@@ -367,6 +450,29 @@ class CucumberTestController {
   dispose() {
     this.controller.dispose();
     this.watchedFiles.clear();
+  }
+
+  private resetPendingState(items: readonly vscode.TestItem[], run: vscode.TestRun) {
+    const queue: vscode.TestItem[] = [];
+
+    for (const item of items) {
+      run.started(item);
+      if (item.children.size > 0) {
+        queue.push(item);
+      }
+    }
+
+    while (queue.length > 0) {
+      const parent = queue.shift();
+      if (!parent) continue;
+
+      parent.children.forEach(child => {
+        run.enqueued(child);
+        if (child.children.size > 0) {
+          queue.push(child);
+        }
+      });
+    }
   }
 }
 
