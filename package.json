@@ -2,7 +2,7 @@
   "name": "cucumber-java-easy-runner",
   "displayName": "Cucumber Java Easy Runner",
   "description": "VS Code extension for easily running Cucumber Feature files in Java projects",
-  "version": "0.0.9",
+  "version": "0.1.2",
   "publisher": "HakkiEtem",
   "author": {
     "name": "Hakki Etem"
@@ -116,6 +116,50 @@
           "type": "boolean",
           "default": false,
           "description": "Enable CodeLens buttons in feature files. When disabled, use Test Explorer instead for a cleaner interface."
+        },
+        "cucumberJavaEasyRunner.autoCompileMaven": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run 'mvn compile test-compile' before executing tests. Enable this if you want the extension to compile the project automatically."
+        },
+        "cucumberJavaEasyRunner.additionalGluePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra glue paths (Java packages) that contain step definitions. Useful when steps live in shared libraries."
+        },
+        "cucumberJavaEasyRunner.excludeBuildDirectories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "target",
+            "build",
+            "out",
+            "dist",
+            "node_modules",
+            ".git"
+          ],
+          "description": "Directories excluded while discovering feature files to avoid duplicates."
+        },
+        "cucumberJavaEasyRunner.objectFactory": {
+          "type": "string",
+          "description": "Custom Cucumber object factory (e.g. 'cucumber.api.spring.SpringFactory')."
+        },
+        "cucumberJavaEasyRunner.logLevel": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "default": "info",
+          "description": "Controls the verbosity of extension logs shown in the VS Code Output panel."
         }
       }
     }

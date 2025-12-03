@@ -94,12 +94,26 @@ Configure the extension behavior in VS Code Settings:
 
 ```json
 {
-  "cucumberJavaEasyRunner.enableCodeLens": false
+  "cucumberJavaEasyRunner.enableCodeLens": false,
+  "cucumberJavaEasyRunner.autoCompileMaven": false,
+  "cucumberJavaEasyRunner.additionalGluePaths": [],
+  "cucumberJavaEasyRunner.excludeBuildDirectories": [
+    "target",
+    "build",
+    "out",
+    "dist",
+    "node_modules",
+    ".git"
+  ]
 }
 ```
 
 **Settings Options:**
 - `enableCodeLens` (boolean, default: false): Show play buttons in feature files. When disabled, use Test Explorer for a cleaner interface.
+- `autoCompileMaven` (boolean, default: false): If `true`, runs `mvn compile test-compile` before each execution. Leave `false` when you handle builds yourself for faster runs.
+- `additionalGluePaths` (string array, default: `[]`): Extra Java package names that contain step definitions (useful for shared modules).
+- `excludeBuildDirectories` (string array): Directories ignored during feature discovery. Customize if your build output uses different folder names.
+- `objectFactory` (string, optional): Custom Cucumber object factory class (e.g., `cucumber.api.spring.SpringFactory`).
 
 ## 📦 Installation
 
