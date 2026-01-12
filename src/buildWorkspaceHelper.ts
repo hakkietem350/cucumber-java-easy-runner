@@ -48,10 +48,52 @@ export async function resolveMavenClasspath(projectRoot: string): Promise<string
     exec(command, { cwd: projectRoot }, (error, stdout, stderr) => {
       const classPaths: string[] = [
         path.join(projectRoot, 'target', 'test-classes'),
-        path.join(projectRoot, 'target', 'classes'),
-        path.join(projectRoot, 'target', 'generated-sources', 'annotations'),
-        path.join(projectRoot, 'target', 'generated-sources', 'swagger', 'java', 'main')
+        path.join(projectRoot, 'target', 'classes')
       ];
+
+      // Add generated-sources subdirectories as classpath roots
+      // For package "atf.generated.models", classpath root should be "target/generated-sources/swagger"
+      const generatedSourcesDir = path.join(projectRoot, 'target', 'generated-sources');
+      if (fs.existsSync(generatedSourcesDir)) {
+        try {
+          const entries = fs.readdirSync(generatedSourcesDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              const subDir = path.join(generatedSourcesDir, entry.name);
+              // Add subdirectories (swagger, annotations, etc.) as classpath roots
+              classPaths.push(subDir);
+              logger.debug(`Added generated-sources classpath: ${subDir}`);
+
+              // Check for java/main structure (some generators use this)
+              const javaMainPath = path.join(subDir, 'java', 'main');
+              if (fs.existsSync(javaMainPath)) {
+                classPaths.push(javaMainPath);
+              }
+              const javaPath = path.join(subDir, 'java');
+              if (fs.existsSync(javaPath)) {
+                classPaths.push(javaPath);
+              }
+            }
+          }
+        } catch (err) {
+          logger.debug('Error scanning generated-sources:', err);
+        }
+      }
+
+      // Also check generated-test-sources
+      const generatedTestSourcesDir = path.join(projectRoot, 'target', 'generated-test-sources');
+      if (fs.existsSync(generatedTestSourcesDir)) {
+        try {
+          const entries = fs.readdirSync(generatedTestSourcesDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              classPaths.push(path.join(generatedTestSourcesDir, entry.name));
+            }
+          }
+        } catch (err) {
+          logger.debug('Error scanning generated-test-sources:', err);
+        }
+      }
 
       if (error) {
         logger.error('Error resolving Maven classpath:', error);

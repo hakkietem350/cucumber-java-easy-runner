@@ -1,8 +1,8 @@
 {
   "name": "cucumber-java-easy-runner",
-  "displayName": "Cucumber Java Easy Runner",
-  "description": "VS Code extension for easily running Cucumber Feature files in Java projects",
-  "version": "0.1.3",
+  "displayName": "%ext.displayName%",
+  "description": "%ext.description%",
+  "version": "0.1.4",
   "publisher": "HakkiEtem",
   "author": {
     "name": "Hakki Etem"
@@ -40,31 +40,55 @@
     "commands": [
       {
         "command": "cucumberJavaEasyRunner.runFeature",
-        "title": "Cucumber: Run Feature"
+        "title": "%cmd.runFeature%"
       },
       {
         "command": "cucumberJavaEasyRunner.runScenario",
-        "title": "Cucumber: Run Scenario"
+        "title": "%cmd.runScenario%"
       },
       {
         "command": "cucumberJavaEasyRunner.runExample",
-        "title": "Cucumber: Run Example"
+        "title": "%cmd.runExample%"
+      },
+      {
+        "command": "cucumberJavaEasyRunner.debugFeature",
+        "title": "%cmd.debugFeature%"
+      },
+      {
+        "command": "cucumberJavaEasyRunner.debugScenario",
+        "title": "%cmd.debugScenario%"
+      },
+      {
+        "command": "cucumberJavaEasyRunner.debugExample",
+        "title": "%cmd.debugExample%"
       },
       {
         "command": "cucumberJavaEasyRunner.runFeatureCodeLens",
-        "title": "▶ Run Feature"
+        "title": "%cmd.runFeatureCodeLens%"
       },
       {
         "command": "cucumberJavaEasyRunner.runScenarioCodeLens",
-        "title": "▶ Run Scenario"
+        "title": "%cmd.runScenarioCodeLens%"
       },
-            {
+      {
         "command": "cucumberJavaEasyRunner.runExampleCodeLens",
-        "title": "▶ Run Example"
+        "title": "%cmd.runExampleCodeLens%"
+      },
+      {
+        "command": "cucumberJavaEasyRunner.debugFeatureCodeLens",
+        "title": "%cmd.debugFeatureCodeLens%"
+      },
+      {
+        "command": "cucumberJavaEasyRunner.debugScenarioCodeLens",
+        "title": "%cmd.debugScenarioCodeLens%"
+      },
+      {
+        "command": "cucumberJavaEasyRunner.debugExampleCodeLens",
+        "title": "%cmd.debugExampleCodeLens%"
       },
       {
         "command": "cucumberJavaEasyRunner.refreshTests",
-        "title": "Refresh Cucumber Tests",
+        "title": "%cmd.refreshTests%",
         "icon": "$(refresh)"
       }
     ],
@@ -97,30 +121,48 @@
           "when": "resourceExtname == .feature",
           "command": "cucumberJavaEasyRunner.runExample",
           "group": "1_cucumber@3"
+        },
+        {
+          "when": "resourceExtname == .feature",
+          "command": "cucumberJavaEasyRunner.debugFeature",
+          "group": "1_cucumber@4"
+        },
+        {
+          "when": "resourceExtname == .feature",
+          "command": "cucumberJavaEasyRunner.debugScenario",
+          "group": "1_cucumber@5"
+        },
+        {
+          "when": "resourceExtname == .feature",
+          "command": "cucumberJavaEasyRunner.debugExample",
+          "group": "1_cucumber@6"
         }
       ]
     },
-
     "languages": [
       {
         "id": "gherkin",
-        "extensions": [".feature"],
-        "aliases": ["Gherkin", "feature"]
+        "extensions": [
+          ".feature"
+        ],
+        "aliases": [
+          "Gherkin",
+          "feature"
+        ]
       }
     ],
-
     "configuration": {
-      "title": "Cucumber Java Easy Runner",
+      "title": "%config.title%",
       "properties": {
         "cucumberJavaEasyRunner.enableCodeLens": {
           "type": "boolean",
           "default": false,
-          "description": "Enable CodeLens buttons in feature files. When disabled, use Test Explorer instead for a cleaner interface."
+          "description": "%config.enableCodeLens%"
         },
         "cucumberJavaEasyRunner.autoCompileMaven": {
           "type": "boolean",
           "default": false,
-          "description": "Run 'mvn compile test-compile' before executing tests. Enable this if you want the extension to compile the project automatically."
+          "description": "%config.autoCompileMaven%"
         },
         "cucumberJavaEasyRunner.additionalGluePaths": {
           "type": "array",
@@ -128,7 +170,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Extra glue paths (Java packages) that contain step definitions. Useful when steps live in shared libraries."
+          "description": "%config.additionalGluePaths%"
         },
         "cucumberJavaEasyRunner.excludeBuildDirectories": {
           "type": "array",
@@ -143,11 +185,11 @@
             "node_modules",
             ".git"
           ],
-          "description": "Directories excluded while discovering feature files to avoid duplicates."
+          "description": "%config.excludeBuildDirectories%"
         },
         "cucumberJavaEasyRunner.objectFactory": {
           "type": "string",
-          "description": "Custom Cucumber object factory (e.g. 'cucumber.api.spring.SpringFactory')."
+          "description": "%config.objectFactory%"
         },
         "cucumberJavaEasyRunner.logLevel": {
           "type": "string",
@@ -159,13 +201,14 @@
             "trace"
           ],
           "default": "info",
-          "description": "Controls the verbosity of extension logs shown in the VS Code Output panel."
+          "description": "%config.logLevel%"
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run generate-nls && npm run compile",
+    "generate-nls": "node scripts/generate-nls.js",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",

@@ -7,6 +7,10 @@ npm-debug.log*
 out/
 dist/
 
+# Generated NLS files (source is in src/locales/)
+package.nls.json
+package.nls.*.json
+
 # VSCode extension development
 .vscode-test/
 *.vsix

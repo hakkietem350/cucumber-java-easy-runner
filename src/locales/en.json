@@ -1,0 +1,86 @@
+{
+  "package": {
+    "displayName": "Cucumber Java Easy Runner",
+    "description": "VS Code extension to easily run Cucumber Feature files in Java projects",
+    "commands": {
+      "runFeature": "Cucumber: Run Feature",
+      "runScenario": "Cucumber: Run Scenario",
+      "runExample": "Cucumber: Run Example",
+      "debugFeature": "Cucumber: Debug Feature",
+      "debugScenario": "Cucumber: Debug Scenario",
+      "debugExample": "Cucumber: Debug Example",
+      "runFeatureCodeLens": "▶ Run Feature",
+      "runScenarioCodeLens": "▶ Run Scenario",
+      "runExampleCodeLens": "▶ Run Example",
+      "debugFeatureCodeLens": "🐛 Debug Feature",
+      "debugScenarioCodeLens": "🐛 Debug Scenario",
+      "debugExampleCodeLens": "🐛 Debug Example",
+      "refreshTests": "Refresh Cucumber Tests"
+    },
+    "config": {
+      "title": "Cucumber Java Easy Runner",
+      "enableCodeLens": "Enable CodeLens buttons in feature files. When disabled, use Test Explorer for a cleaner interface.",
+      "autoCompileMaven": "Run 'mvn compile test-compile' before running tests. Enable if you want the extension to auto-compile your project.",
+      "additionalGluePaths": "Extra glue paths (Java packages) containing step definitions. Useful when steps are in shared libraries.",
+      "excludeBuildDirectories": "Directories excluded when discovering feature files to avoid duplicates.",
+      "objectFactory": "Custom Cucumber object factory (e.g. 'cucumber.api.spring.SpringFactory').",
+      "logLevel": "Controls the verbosity of extension logs shown in VS Code Output panel."
+    }
+  },
+  "extension": {
+    "activating": "Cucumber Java Easy Runner activating",
+    "testExplorerCreated": "Test explorer created",
+    "inlineButtonsRegistered": "Inline action buttons registered",
+    "inlineButtonsDisabled": "Inline buttons disabled - use Test Explorer instead"
+  },
+  "errors": {
+    "openFeatureFile": "Please open or select a feature file.",
+    "openFile": "Please open a feature file.",
+    "featureFilesOnly": "This command only works with .feature files.",
+    "rightClickScenario": "Please right-click inside a Scenario or Scenario Outline.",
+    "rightClickExample": "Please right-click on a data row (starting with |) in an Examples table.",
+    "exampleNotDetected": "Example row not detected. Please right-click on a data row (starting with |, not the header row) in an Examples table.",
+    "noWorkspaceFolder": "Feature file is not inside a workspace.",
+    "noWorkspace": "No workspace folder found.",
+    "gluePathNotSpecified": "Glue path not specified, operation cancelled.",
+    "testItemNoUri": "Test item has no URI",
+    "testFailed": "Test failed",
+    "scenarioFailed": "Scenario failed",
+    "debugFailed": "Failed to start debug session. Make sure you have the Java debugger extension installed.",
+    "testSessionFailed": "Failed to start test session. Make sure you have the Java debugger extension installed."
+  },
+  "info": {
+    "featureTestStarting": "Feature test starting...",
+    "featureDebugStarting": "Feature debug starting...",
+    "refreshingTests": "Refreshing Cucumber tests..."
+  },
+  "prompts": {
+    "gluePath": "Enter glue path for steps directory (e.g. org.example.steps)",
+    "gluePathPlaceholder": "org.example.steps"
+  },
+  "testResults": {
+    "checkTerminal": "Test failed. Check terminal for details.",
+    "checkDebugConsole": "Test failed. Check debug console for details.",
+    "oneOrMoreFailed": "One or more scenarios failed."
+  },
+  "progress": {
+    "compiling": "Compiling project and resolving dependencies"
+  },
+  "tooltips": {
+    "runFeature": "Click to run the entire feature file",
+    "debugFeature": "Click to debug the entire feature file",
+    "runScenario": "Click to run this scenario",
+    "debugScenario": "Click to debug this scenario",
+    "runExample": "Click to run this example row",
+    "debugExample": "Click to debug this example row"
+  },
+  "dynamic": {
+    "scenarioTestStarting": "Scenario test starting at line {0}...",
+    "scenarioDebugStarting": "Scenario debug starting at line {0}...",
+    "exampleTestStarting": "Example test starting at line {0}...",
+    "exampleDebugStarting": "Example debug starting at line {0}...",
+    "foundFeatureFiles": "Found {0} feature files",
+    "runningFeatures": "Running {0} features in batch mode",
+    "compilingFeatures": "Compiling project and resolving dependencies for {0} feature(s)..."
+  }
+}

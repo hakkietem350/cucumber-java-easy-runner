@@ -1,7 +1,8 @@
-import * as vscode from 'vscode';
-import * as path from 'path';
 import * as fs from 'fs';
+import * as path from 'path';
+import * as vscode from 'vscode';
 import { findGluePath, resolveMavenClasspath } from './buildWorkspaceHelper';
+import { messages, paramMessages } from './i18n';
 import { logger } from './logger';
 
 export interface TestExecutionResult {
@@ -26,7 +27,7 @@ export async function runCucumberTestBatch(
 
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(features[0].uri);
   if (!workspaceFolder) {
-    vscode.window.showErrorMessage('Feature file is not inside a workspace.');
+    vscode.window.showErrorMessage(messages.errorNoWorkspaceFolder);
     return { passed: false };
   }
 
@@ -37,12 +38,12 @@ export async function runCucumberTestBatch(
 
     if (!gluePaths) {
       const userInput = await vscode.window.showInputBox({
-        prompt: 'Enter glue path for steps directory (e.g. org.example.steps)',
-        placeHolder: 'org.example.steps'
+        prompt: messages.promptGluePath,
+        placeHolder: messages.promptGluePathPlaceholder
       });
 
       if (!userInput) {
-        vscode.window.showErrorMessage('Glue path not specified, operation cancelled.');
+        vscode.window.showErrorMessage(messages.errorGluePathNotSpecified);
         return { passed: false };
       }
 
@@ -75,7 +76,7 @@ export async function runCucumberTest(
 ): Promise<TestExecutionResult> {
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
   if (!workspaceFolder) {
-    vscode.window.showErrorMessage('Feature file is not inside a workspace.');
+    vscode.window.showErrorMessage(messages.errorNoWorkspaceFolder);
     return { passed: false };
   }
 
@@ -116,13 +117,13 @@ async function executeCucumberTestBatch(
 
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
-    vscode.window.showErrorMessage('No workspace folder found.');
+    vscode.window.showErrorMessage(messages.errorNoWorkspace);
     return { passed: false };
   }
 
   const classPaths = await vscode.window.withProgress({
     location: vscode.ProgressLocation.Notification,
-    title: `Compiling project and resolving dependencies for ${features.length} feature(s)...`,
+    title: paramMessages.compilingFeatures(features.length),
     cancellable: false
   }, async () => await resolveMavenClasspath(projectRoot));
 
@@ -182,7 +183,8 @@ async function runWithVSCode(
   const started = await vscode.debug.startDebugging(workspaceFolder, config);
 
   if (!started) {
-    vscode.window.showErrorMessage(`Failed to start ${isDebug ? 'debug' : 'test'} session. Make sure you have the Java debugger extension installed.`);
+    const errorMsg = isDebug ? messages.errorDebugFailed : messages.errorTestSessionFailed;
+    vscode.window.showErrorMessage(errorMsg);
     return { passed: false };
   }
 

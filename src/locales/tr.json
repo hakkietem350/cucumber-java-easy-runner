@@ -1,0 +1,86 @@
+{
+  "package": {
+    "displayName": "Cucumber Java Kolay Çalıştırıcı",
+    "description": "Java projelerinde Cucumber Feature dosyalarını kolayca çalıştırmak için VS Code eklentisi",
+    "commands": {
+      "runFeature": "Cucumber: Feature Çalıştır",
+      "runScenario": "Cucumber: Senaryo Çalıştır",
+      "runExample": "Cucumber: Örnek Çalıştır",
+      "debugFeature": "Cucumber: Feature Debug Et",
+      "debugScenario": "Cucumber: Senaryo Debug Et",
+      "debugExample": "Cucumber: Örnek Debug Et",
+      "runFeatureCodeLens": "▶ Feature Çalıştır",
+      "runScenarioCodeLens": "▶ Senaryo Çalıştır",
+      "runExampleCodeLens": "▶ Örnek Çalıştır",
+      "debugFeatureCodeLens": "🐛 Feature Debug Et",
+      "debugScenarioCodeLens": "🐛 Senaryo Debug Et",
+      "debugExampleCodeLens": "🐛 Örnek Debug Et",
+      "refreshTests": "Cucumber Testlerini Yenile"
+    },
+    "config": {
+      "title": "Cucumber Java Kolay Çalıştırıcı",
+      "enableCodeLens": "Feature dosyalarında CodeLens butonlarını etkinleştir. Devre dışı bırakıldığında, daha temiz bir arayüz için Test Explorer kullanın.",
+      "autoCompileMaven": "Testleri çalıştırmadan önce 'mvn compile test-compile' komutunu çalıştır. Eklentinin projeyi otomatik derlemesini istiyorsanız etkinleştirin.",
+      "additionalGluePaths": "Step tanımlarını içeren ekstra glue yolları (Java paketleri). Adımlar paylaşılan kütüphanelerde olduğunda kullanışlıdır.",
+      "excludeBuildDirectories": "Feature dosyalarını keşfederken yinelenenleri önlemek için hariç tutulan dizinler.",
+      "objectFactory": "Özel Cucumber object factory (örn. 'cucumber.api.spring.SpringFactory').",
+      "logLevel": "VS Code Çıktı panelinde gösterilen eklenti günlüklerinin ayrıntı düzeyini kontrol eder."
+    }
+  },
+  "extension": {
+    "activating": "Cucumber Java Easy Runner başlatılıyor",
+    "testExplorerCreated": "Test explorer oluşturuldu",
+    "inlineButtonsRegistered": "Satır içi butonlar kaydedildi",
+    "inlineButtonsDisabled": "Satır içi butonlar devre dışı - Test Explorer kullanın"
+  },
+  "errors": {
+    "openFeatureFile": "Lütfen bir feature dosyası açın veya seçin.",
+    "openFile": "Lütfen bir feature dosyası açın.",
+    "featureFilesOnly": "Bu komut sadece .feature dosyalarıyla çalışır.",
+    "rightClickScenario": "Lütfen bir Scenario veya Scenario Outline içinde sağ tıklayın.",
+    "rightClickExample": "Lütfen Examples tablosundaki bir veri satırında (| ile başlayan) sağ tıklayın.",
+    "exampleNotDetected": "Örnek satırı algılanamadı. Lütfen Examples tablosundaki bir veri satırında (başlık satırı değil, | ile başlayan) sağ tıklayın.",
+    "noWorkspaceFolder": "Feature dosyası bir workspace içinde değil.",
+    "noWorkspace": "Workspace klasörü bulunamadı.",
+    "gluePathNotSpecified": "Glue path belirtilmedi, işlem iptal edildi.",
+    "testItemNoUri": "Test öğesinin URI'si yok",
+    "testFailed": "Test başarısız",
+    "scenarioFailed": "Senaryo başarısız",
+    "debugFailed": "Debug oturumu başlatılamadı. Java debugger eklentisinin yüklü olduğundan emin olun.",
+    "testSessionFailed": "Test oturumu başlatılamadı. Java debugger eklentisinin yüklü olduğundan emin olun."
+  },
+  "info": {
+    "featureTestStarting": "Feature testi başlatılıyor...",
+    "featureDebugStarting": "Feature debug başlatılıyor...",
+    "refreshingTests": "Cucumber testleri yenileniyor..."
+  },
+  "prompts": {
+    "gluePath": "Steps dizini için glue path girin (örn. org.example.steps)",
+    "gluePathPlaceholder": "org.example.steps"
+  },
+  "testResults": {
+    "checkTerminal": "Test başarısız. Detaylar için terminali kontrol edin.",
+    "checkDebugConsole": "Test başarısız. Detaylar için debug konsolunu kontrol edin.",
+    "oneOrMoreFailed": "Bir veya daha fazla senaryo başarısız oldu."
+  },
+  "progress": {
+    "compiling": "Proje derleniyor ve bağımlılıklar çözülüyor"
+  },
+  "tooltips": {
+    "runFeature": "Tüm feature dosyasını çalıştırmak için tıklayın",
+    "debugFeature": "Tüm feature dosyasını debug etmek için tıklayın",
+    "runScenario": "Bu senaryoyu çalıştırmak için tıklayın",
+    "debugScenario": "Bu senaryoyu debug etmek için tıklayın",
+    "runExample": "Bu örnek satırını çalıştırmak için tıklayın",
+    "debugExample": "Bu örnek satırını debug etmek için tıklayın"
+  },
+  "dynamic": {
+    "scenarioTestStarting": "Senaryo testi {0}. satırda başlatılıyor...",
+    "scenarioDebugStarting": "Senaryo debug {0}. satırda başlatılıyor...",
+    "exampleTestStarting": "Örnek testi {0}. satırda başlatılıyor...",
+    "exampleDebugStarting": "Örnek debug {0}. satırda başlatılıyor...",
+    "foundFeatureFiles": "{0} feature dosyası bulundu",
+    "runningFeatures": "{0} feature toplu modda çalıştırılıyor",
+    "compilingFeatures": "{0} feature için proje derleniyor ve bağımlılıklar çözülüyor..."
+  }
+}
