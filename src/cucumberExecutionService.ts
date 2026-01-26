@@ -131,6 +131,7 @@ async function executeCucumberTestBatch(
 
   const config = vscode.workspace.getConfiguration('cucumberJavaEasyRunner');
   const customObjectFactory = config.get<string>('objectFactory');
+  const customVmArgs = config.get<string>('vmArgs') || '';
 
   const cucumberPaths = features.map(f => {
     let cucumberPath = f.relativePath.replace(/\\/g, '/');
@@ -152,7 +153,7 @@ async function executeCucumberTestBatch(
     cucumberPaths
   ].join(' ');
 
-  return await runWithVSCode(workspaceFolder, configName, classPaths, cucumberArgs, projectRoot, resultFile, isDebug);
+  return await runWithVSCode(workspaceFolder, configName, classPaths, cucumberArgs, projectRoot, resultFile, isDebug, customVmArgs);
 }
 
 async function runWithVSCode(
@@ -162,7 +163,8 @@ async function runWithVSCode(
   cucumberArgs: string,
   projectRoot: string,
   resultFile: string,
-  isDebug: boolean
+  isDebug: boolean,
+  customVmArgs: string
 ): Promise<TestExecutionResult> {
   const config: vscode.DebugConfiguration = {
     type: 'java',
@@ -173,7 +175,7 @@ async function runWithVSCode(
     cwd: '${workspaceFolder}',
     args: cucumberArgs,
     classPaths: classPaths,
-    vmArgs: '-Dfile.encoding=UTF-8',
+    vmArgs: `-Dfile.encoding=UTF-8 ${customVmArgs}`.trim(),
     console: 'integratedTerminal',
     noDebug: !isDebug,
     stopOnEntry: false,
