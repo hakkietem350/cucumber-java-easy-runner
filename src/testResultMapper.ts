@@ -265,57 +265,93 @@ async function parseResultFileForFeature(resultFile: string, featureUri: vscode.
 }
 
 export async function markChildrenFromResults(
-  featureItem: vscode.TestItem,
+  testItem: vscode.TestItem,
   run: vscode.TestRun,
   resultFile: string
 ): Promise<void> {
   try {
-    if (!featureItem.uri) {
-      logger.error('Feature item has no URI');
+    if (!testItem.uri) {
+      logger.error('Test item has no URI');
       return;
     }
 
-    const scenarioResults = await parseResultFileForFeature(resultFile, featureItem.uri);
+    const scenarioResults = await parseResultFileForFeature(resultFile, testItem.uri);
     const scenarioAggregates = new Map<string, { item: vscode.TestItem; passed: boolean; message?: vscode.TestMessage; matched: boolean }>();
 
-    featureItem.children.forEach(child => {
-      scenarioAggregates.set(child.id, { item: child, passed: true, matched: false });
-    });
+    // Check if this is a Scenario Outline item (has :scenario: in ID and has example children)
+    const isScenarioOutline = testItem.id.includes(':scenario:') && testItem.children.size > 0;
+
+    // For Scenario Outline, we need to track the parent scenario for aggregation
+    if (isScenarioOutline) {
+      scenarioAggregates.set(testItem.id, { item: testItem, passed: true, matched: false });
+    } else {
+      testItem.children.forEach(child => {
+        scenarioAggregates.set(child.id, { item: child, passed: true, matched: false });
+      });
+    }
 
     for (const scenarioResult of scenarioResults) {
       let matchedScenario: vscode.TestItem | undefined;
       let matchedExample: vscode.TestItem | undefined;
 
-      featureItem.children.forEach(child => {
-        if (matchedScenario) {
-          return;
-        }
-        const childIdParts = child.id.split(':scenario:');
-        if (childIdParts.length > 1) {
-          const lineNumberPart = childIdParts[1].split(':')[0];
-          const childScenarioLine = parseInt(lineNumberPart, 10);
-
-          if (childScenarioLine === scenarioResult.line) {
-            matchedScenario = child;
-            matchedExample = child;
+      // If this is a Scenario Outline, search directly in its example children
+      if (isScenarioOutline) {
+        testItem.children.forEach(exampleChild => {
+          if (matchedExample) {
             return;
           }
-
-          child.children.forEach(exampleChild => {
+          const exampleParts = exampleChild.id.split(':example:');
+          if (exampleParts.length > 1) {
+            const exampleLine = parseInt(exampleParts[1], 10);
+            if (exampleLine === scenarioResult.line) {
+              matchedScenario = testItem;
+              matchedExample = exampleChild;
+            }
+          }
+        });
+      } else {
+        // Helper function to search in a collection of test items (for Feature level)
+        const searchInChildren = (children: vscode.TestItemCollection) => {
+          children.forEach(child => {
             if (matchedScenario) {
               return;
             }
-            const exampleParts = exampleChild.id.split(':example:');
-            if (exampleParts.length > 1) {
-              const exampleLine = parseInt(exampleParts[1], 10);
-              if (exampleLine === scenarioResult.line) {
+            const childIdParts = child.id.split(':scenario:');
+            if (childIdParts.length > 1) {
+              const lineNumberPart = childIdParts[1].split(':')[0];
+              const childScenarioLine = parseInt(lineNumberPart, 10);
+
+              if (childScenarioLine === scenarioResult.line) {
                 matchedScenario = child;
-                matchedExample = exampleChild;
+                matchedExample = child;
+                return;
               }
+
+              // Search in example children
+              child.children.forEach(exampleChild => {
+                if (matchedScenario) {
+                  return;
+                }
+                const exampleParts = exampleChild.id.split(':example:');
+                if (exampleParts.length > 1) {
+                  const exampleLine = parseInt(exampleParts[1], 10);
+                  if (exampleLine === scenarioResult.line) {
+                    matchedScenario = child;
+                    matchedExample = exampleChild;
+                  }
+                }
+              });
+            }
+
+            // Also search in Rule children (rules contain scenarios)
+            if (child.id.includes(':rule:') && child.children.size > 0) {
+              searchInChildren(child.children);
             }
           });
-        }
-      });
+        };
+
+        searchInChildren(testItem.children);
+      }
 
       if (!matchedScenario || !matchedExample) {
         logger.debug(`WARNING: No matching child found for scenario at line ${scenarioResult.line}`);
