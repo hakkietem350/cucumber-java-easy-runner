@@ -1,4 +1,6 @@
+import { spawn } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { findGluePath, resolveMavenClasspath } from './buildWorkspaceHelper';
@@ -8,6 +10,7 @@ import { logger } from './logger';
 export interface TestExecutionResult {
   passed: boolean;
   resultFile?: string;
+  consoleOutput?: string;
 }
 
 export interface FeatureToRun {
@@ -15,6 +18,49 @@ export interface FeatureToRun {
   relativePath: string;
   lineNumber?: number;
   exampleLine?: number;
+}
+
+// ─── Output channel singleton ─────────────────────────────────────────────────
+let _outputChannel: vscode.OutputChannel | undefined;
+
+function getOutputChannel(): vscode.OutputChannel {
+  if (!_outputChannel) {
+    _outputChannel = vscode.window.createOutputChannel('Cucumber Java Runner');
+  }
+  return _outputChannel;
+}
+
+// Strip ANSI escape codes so the output channel is readable plain text
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1B\[[0-9;]*[mGKHF]/g, '');
+}
+
+// ─── Custom PTY terminal (clickable links) ────────────────────────────────────
+
+class RunOutputPty implements vscode.Pseudoterminal {
+  private readonly _writeEmitter = new vscode.EventEmitter<string>();
+  readonly onDidWrite: vscode.Event<string> = this._writeEmitter.event;
+  open(): void {}
+  close(): void {}
+  write(text: string): void {
+    // Normalize LF → CRLF so the terminal renders correctly
+    this._writeEmitter.fire(text.replace(/(?<!\r)\n/g, '\r\n'));
+  }
+  clear(): void {
+    this._writeEmitter.fire('\x1b[2J\x1b[H');
+  }
+}
+
+let _runTerminal: vscode.Terminal | undefined;
+let _runPty: RunOutputPty | undefined;
+
+function getRunTerminal(): { terminal: vscode.Terminal; pty: RunOutputPty } {
+  if (!_runTerminal || !vscode.window.terminals.includes(_runTerminal)) {
+    _runPty = new RunOutputPty();
+    _runTerminal = vscode.window.createTerminal({ name: 'Cucumber Java Runner', pty: _runPty });
+  }
+  return { terminal: _runTerminal, pty: _runPty! };
 }
 
 export async function runCucumberTestBatch(
@@ -148,13 +194,150 @@ async function executeCucumberTestBatch(
   const cucumberArgs = [
     ...gluePaths.flatMap(gluePath => ['--glue', gluePath]),
     '--plugin', 'pretty',
+    ...(!isDebug ? ['--monochrome'] : []),
     '--plugin', `json:${resultFile}`,
     ...(customObjectFactory ? ['--object-factory', customObjectFactory] : []),
     cucumberPaths
   ].join(' ');
 
-  return await runWithVSCode(workspaceFolder, configName, classPaths, cucumberArgs, projectRoot, resultFile, isDebug, customVmArgs);
+  if (isDebug) {
+    return await runWithVSCode(workspaceFolder, configName, classPaths, cucumberArgs, projectRoot, resultFile, customVmArgs);
+  } else {
+    return await runWithProcess(workspaceFolder, configName, classPaths, cucumberArgs, projectRoot, resultFile, customVmArgs);
+  }
 }
+
+// ─── Spawn-based run (captures stdout/stderr) ─────────────────────────────────
+
+async function runWithProcess(
+  workspaceFolder: vscode.WorkspaceFolder,
+  configName: string,
+  classPaths: string[],
+  cucumberArgs: string,
+  projectRoot: string,
+  resultFile: string,
+  customVmArgs: string
+): Promise<TestExecutionResult> {
+  // Write argfile for long classpaths
+  const argFilePath = await writeArgFile(projectRoot, classPaths, cucumberArgs, customVmArgs);
+
+  const javaExecutable = await resolveJavaExecutable(projectRoot);
+  const args = argFilePath ? [`@${argFilePath}`] : buildJavaArgs(classPaths, cucumberArgs, customVmArgs);
+
+  const { terminal, pty } = getRunTerminal();
+  pty.clear();
+  terminal.show(true);
+  pty.write(`▶ ${configName}\r\n`);
+  pty.write('─'.repeat(60) + '\r\n');
+
+  const outputLines: string[] = [];
+
+  return new Promise<TestExecutionResult>((resolve) => {
+    const proc = spawn(javaExecutable, args, {
+      cwd: projectRoot,
+      env: { ...process.env }
+    });
+
+    const handleData = (data: Buffer) => {
+      const raw = data.toString();
+      pty.write(raw);
+      outputLines.push(stripAnsi(raw));
+    };
+
+    proc.stdout.on('data', handleData);
+    proc.stderr.on('data', handleData);
+
+    proc.on('error', (err) => {
+      const msg = `Failed to start Java process: ${err.message}`;
+      pty.write(msg + '\r\n');
+      logger.error(msg);
+      if (argFilePath) { tryDeleteFile(argFilePath); }
+      resolve({ passed: false, consoleOutput: outputLines.join('') });
+    });
+
+    proc.on('close', async (code) => {
+      pty.write('─'.repeat(60) + '\r\n');
+      pty.write(`Process exited with code ${code}\r\n`);
+
+      if (argFilePath) { tryDeleteFile(argFilePath); }
+
+      const consoleOutput = outputLines.join('');
+      const testPassed = await checkCucumberResults(resultFile);
+
+      resolve({
+        passed: testPassed,
+        resultFile: resultFile,
+        consoleOutput: consoleOutput
+      });
+    });
+
+    // Timeout after 10 minutes
+    setTimeout(() => {
+      proc.kill();
+      logger.warn('Test execution timeout after 10 minutes');
+      if (argFilePath) { tryDeleteFile(argFilePath); }
+      resolve({ passed: false, consoleOutput: outputLines.join('') });
+    }, 600000);
+  });
+}
+
+function buildJavaArgs(classPaths: string[], cucumberArgs: string, customVmArgs: string): string[] {
+  const vmArgsList = `-Dfile.encoding=UTF-8 ${customVmArgs}`.trim().split(/\s+/).filter(Boolean);
+  const cpStr = classPaths.join(path.delimiter);
+  return [
+    ...vmArgsList,
+    '-cp', cpStr,
+    'io.cucumber.core.cli.Main',
+    ...cucumberArgs.split(/\s+/).filter(Boolean)
+  ];
+}
+
+async function writeArgFile(
+  projectRoot: string,
+  classPaths: string[],
+  cucumberArgs: string,
+  customVmArgs: string
+): Promise<string | undefined> {
+  try {
+    const vmArgsList = `-Dfile.encoding=UTF-8 ${customVmArgs}`.trim().split(/\s+/).filter(Boolean);
+    const cpStr = classPaths.map(p => `"${p.replace(/\\/g, '/')}"`).join(path.delimiter);
+    const cucumberArgsList = cucumberArgs.split(/\s+/).filter(Boolean).map(a => `"${a}"`);
+
+    const content = [
+      ...vmArgsList,
+      `-cp`,
+      cpStr,
+      `io.cucumber.core.cli.Main`,
+      ...cucumberArgsList
+    ].join('\n');
+
+    const argFilePath = path.join(os.tmpdir(), `.cucumber-args-${Date.now()}.txt`);
+    fs.writeFileSync(argFilePath, content, 'utf-8');
+    logger.debug(`Wrote argfile: ${argFilePath}`);
+    return argFilePath;
+  } catch (err) {
+    logger.warn('Could not write argfile, using inline args:', err);
+    return undefined;
+  }
+}
+
+async function resolveJavaExecutable(projectRoot: string): Promise<string> {
+  // Try JAVA_HOME first, then fall back to 'java' on PATH
+  const javaHome = process.env.JAVA_HOME;
+  if (javaHome) {
+    const javaExe = path.join(javaHome, 'bin', 'java');
+    if (fs.existsSync(javaExe)) {
+      return javaExe;
+    }
+  }
+  return 'java';
+}
+
+function tryDeleteFile(filePath: string): void {
+  try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+}
+
+// ─── Debug mode: VS Code debugger ────────────────────────────────────────────
 
 async function runWithVSCode(
   workspaceFolder: vscode.WorkspaceFolder,
@@ -163,7 +346,6 @@ async function runWithVSCode(
   cucumberArgs: string,
   projectRoot: string,
   resultFile: string,
-  isDebug: boolean,
   customVmArgs: string
 ): Promise<TestExecutionResult> {
   const config: vscode.DebugConfiguration = {
@@ -171,13 +353,12 @@ async function runWithVSCode(
     name: configName,
     request: 'launch',
     mainClass: 'io.cucumber.core.cli.Main',
-    projectName: path.basename(projectRoot),
-    cwd: '${workspaceFolder}',
+    cwd: projectRoot,
     args: cucumberArgs,
     classPaths: classPaths,
     vmArgs: `-Dfile.encoding=UTF-8 ${customVmArgs}`.trim(),
     console: 'integratedTerminal',
-    noDebug: !isDebug,
+    noDebug: false,
     stopOnEntry: false,
     internalConsoleOptions: 'neverOpen',
   };
@@ -185,7 +366,7 @@ async function runWithVSCode(
   const started = await vscode.debug.startDebugging(workspaceFolder, config);
 
   if (!started) {
-    const errorMsg = isDebug ? messages.errorDebugFailed : messages.errorTestSessionFailed;
+    const errorMsg = messages.errorDebugFailed;
     vscode.window.showErrorMessage(errorMsg);
     return { passed: false };
   }
@@ -325,4 +506,3 @@ async function checkCucumberResults(resultFile: string): Promise<boolean> {
     return false;
   }
 }
-

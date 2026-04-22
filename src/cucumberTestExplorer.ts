@@ -418,7 +418,7 @@ export class CucumberTestExplorer {
 
           // Mark children from results
           if (item.children.size > 0) {
-            await markChildrenFromResults(item, run, result.resultFile);
+            await markChildrenFromResults(item, run, result.resultFile, result.consoleOutput);
           }
 
           // Check if THIS specific feature has failures
@@ -432,7 +432,7 @@ export class CucumberTestExplorer {
           if (featureFailed) {
             // This feature has failures - get error messages
             allPassed = false;
-            const errorMessages = await getTestErrorMessages(result.resultFile, item.uri);
+            const errorMessages = await getTestErrorMessages(result.resultFile, item.uri, result.consoleOutput);
             if (errorMessages.length > 0) {
               run.failed(item, errorMessages);
             } else {

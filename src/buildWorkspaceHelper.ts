@@ -1,8 +1,100 @@
 import { exec } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { logger } from './logger';
+
+// ─── Classpath cache ────────────────────────────────────────────────────────
+interface CachedClasspath {
+  pomMtime: number;
+  classPaths: string[];
+}
+const classpathCache = new Map<string, CachedClasspath>();
+
+function getPomMtime(projectRoot: string): number {
+  try {
+    return fs.statSync(path.join(projectRoot, 'pom.xml')).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function mavenSettingsFlag(projectRoot: string): string {
+  const settingsPath = path.join(projectRoot, 'settings.xml');
+  if (!fs.existsSync(settingsPath)) { return ''; }
+  const escaped = settingsPath.replace(/"/g, '\\"');
+  return ` -s "${escaped}"`;
+}
+
+// ─── @CucumberOptions parser ─────────────────────────────────────────────────
+
+function collectJavaFiles(dir: string): string[] {
+  const results: string[] = [];
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        results.push(...collectJavaFiles(full));
+      } else if (entry.name.endsWith('.java')) {
+        results.push(full);
+      }
+    }
+  } catch {
+    // ignore unreadable dirs
+  }
+  return results;
+}
+
+function extractCucumberOptionsBody(source: string): string | null {
+  const startIdx = source.indexOf('@CucumberOptions');
+  if (startIdx === -1) { return null; }
+  const openParen = source.indexOf('(', startIdx);
+  if (openParen === -1) { return null; }
+  let depth = 1;
+  let i = openParen + 1;
+  while (i < source.length && depth > 0) {
+    if (source[i] === '(') { depth++; }
+    else if (source[i] === ')') { depth--; }
+    i++;
+  }
+  if (depth !== 0) { return null; }
+  return source.substring(openParen + 1, i - 1);
+}
+
+function extractAnnotationStringArray(body: string, key: string): string[] | undefined {
+  const arrayRe = new RegExp(`\\b${key}\\s*=\\s*\\{([^}]*)\\}`);
+  const arrayMatch = body.match(arrayRe);
+  if (arrayMatch) {
+    const items = arrayMatch[1].match(/"([^"]*)"/g);
+    if (items) { return items.map(s => s.slice(1, -1)); }
+  }
+  const singleRe = new RegExp(`\\b${key}\\s*=\\s*"([^"]*)"`);
+  const singleMatch = body.match(singleRe);
+  if (singleMatch) { return [singleMatch[1]]; }
+  return undefined;
+}
+
+function findGlueFromRunnerClass(projectRoot: string): string[] | null {
+  const testDir = path.join(projectRoot, 'src', 'test', 'java');
+  if (!fs.existsSync(testDir)) { return null; }
+  for (const filePath of collectJavaFiles(testDir)) {
+    let source: string;
+    try { source = fs.readFileSync(filePath, 'utf-8'); } catch { continue; }
+    if (!source.includes('@RunWith') || !source.includes('Cucumber')) { continue; }
+    if (!source.includes('@RunWith(Cucumber.class)') && !source.match(/@RunWith\s*\(\s*Cucumber\.class\s*\)/)) {
+      continue;
+    }
+    const optionsBody = extractCucumberOptionsBody(source);
+    if (!optionsBody) { continue; }
+    const glue = extractAnnotationStringArray(optionsBody, 'glue');
+    if (glue && glue.length > 0) {
+      logger.info(`Found @CucumberOptions glue in ${path.basename(filePath)}: ${glue.join(', ')}`);
+      return glue;
+    }
+  }
+  return null;
+}
 
 async function compileMavenProject(projectRoot: string): Promise<boolean> {
   const config = vscode.workspace.getConfiguration('cucumberJavaEasyRunner');
@@ -14,7 +106,8 @@ async function compileMavenProject(projectRoot: string): Promise<boolean> {
   }
 
   return new Promise((resolve) => {
-    const command = 'mvn compile test-compile -Dmaven.compiler.useIncrementalCompilation=true -q';
+    const settings = mavenSettingsFlag(projectRoot);
+    const command = `mvn${settings} compile test-compile -Dmaven.compiler.useIncrementalCompilation=true -q`;
 
     logger.info('Ensuring Maven project is compiled (incremental)...');
 
@@ -36,14 +129,72 @@ async function compileMavenProject(projectRoot: string): Promise<boolean> {
   });
 }
 
+function fixSlf4jBinding(classPaths: string[]): string[] {
+  // Check if classpath has slf4j-api 2.x
+  const hasSlf4jApi2 = classPaths.some(p => /slf4j-api[/-]2\./i.test(p));
+  if (!hasSlf4jApi2) {
+    return classPaths;
+  }
+
+  // Check if a compatible SLF4J 2.x binding already exists
+  const hasCompatibleBinding = classPaths.some(p =>
+    (/slf4j-simple[/-]2\./i.test(p) ||
+     /slf4j-jdk14[/-]2\./i.test(p) ||
+     /log4j-slf4j2-impl/i.test(p) ||
+     /logback-classic/i.test(p)) &&
+    fs.existsSync(p)
+  );
+
+  if (hasCompatibleBinding) {
+    return classPaths;
+  }
+
+  // Find slf4j-simple 2.x in local M2 repo
+  const m2Slf4jSimpleDir = path.join(os.homedir(), '.m2', 'repository', 'org', 'slf4j', 'slf4j-simple');
+  let bestJar: string | undefined;
+
+  try {
+    if (fs.existsSync(m2Slf4jSimpleDir)) {
+      const versions = fs.readdirSync(m2Slf4jSimpleDir).filter(v => v.startsWith('2.'));
+      versions.sort().reverse(); // prefer latest 2.x
+      for (const version of versions) {
+        const jar = path.join(m2Slf4jSimpleDir, version, `slf4j-simple-${version}.jar`);
+        if (fs.existsSync(jar)) {
+          bestJar = jar;
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn('Could not scan M2 repo for slf4j-simple 2.x:', err);
+  }
+
+  if (bestJar) {
+    logger.info(`SLF4J 2.x detected without compatible binding — prepending: ${bestJar}`);
+    return [bestJar, ...classPaths];
+  }
+
+  logger.warn('slf4j-api 2.x is on classpath but no compatible SLF4J binding found in M2 repo. HTTP logs may be suppressed.');
+  return classPaths;
+}
+
 export async function resolveMavenClasspath(projectRoot: string): Promise<string[]> {
+  // Return cached classpath if pom.xml hasn't changed since last resolve
+  const currentMtime = getPomMtime(projectRoot);
+  const cached = classpathCache.get(projectRoot);
+  if (cached && cached.pomMtime === currentMtime && currentMtime !== 0) {
+    logger.info('Using cached Maven classpath (pom.xml unchanged)');
+    return cached.classPaths;
+  }
+
   const compiled = await compileMavenProject(projectRoot);
   if (!compiled) {
     logger.warn('Maven compilation failed, but continuing with classpath resolution...');
   }
 
   return new Promise((resolve) => {
-    const command = 'mvn dependency:build-classpath -DincludeScope=test -q -Dmdep.outputFile=/dev/stdout';
+    const settings = mavenSettingsFlag(projectRoot);
+    const command = `mvn${settings} dependency:build-classpath -DincludeScope=test -q -Dmdep.outputFile=/dev/stdout`;
 
     exec(command, { cwd: projectRoot }, (error, stdout, stderr) => {
       const classPaths: string[] = [
@@ -109,7 +260,13 @@ export async function resolveMavenClasspath(projectRoot: string): Promise<string
       }
 
       logger.debug(`Resolved ${classPaths.length} classpath entries from Maven`);
-      resolve(classPaths);
+
+      const fixedClassPaths = fixSlf4jBinding(classPaths);
+
+      // Store in cache keyed by project root
+      classpathCache.set(projectRoot, { pomMtime: currentMtime, classPaths: fixedClassPaths });
+
+      resolve(fixedClassPaths);
     });
   });
 }
@@ -125,14 +282,21 @@ export async function findGluePath(projectRoot: string): Promise<string[] | null
     gluePaths.push(...additionalGluePaths);
   }
 
-  const testDir = path.join(projectRoot, 'src', 'test', 'java');
+  // Primary: read @CucumberOptions(glue=...) from JUnit4 runner class
+  const runnerGlue = findGlueFromRunnerClass(projectRoot);
+  if (runnerGlue && runnerGlue.length > 0) {
+    gluePaths.push(...runnerGlue);
+  } else {
+    // Fallback: scan for a 'steps'/'step' directory
+    const testDir = path.join(projectRoot, 'src', 'test', 'java');
 
-  if (fs.existsSync(testDir)) {
-    const stepsDir = await findStepsDir(testDir, fs);
+    if (fs.existsSync(testDir)) {
+      const stepsDir = await findStepsDir(testDir, fs);
 
-    if (stepsDir) {
-      const packagePath = path.relative(testDir, stepsDir).replace(/\\/g, '/').replace(/\//g, '.');
-      gluePaths.push(packagePath);
+      if (stepsDir) {
+        const packagePath = path.relative(testDir, stepsDir).replace(/\\/g, '/').replace(/\//g, '.');
+        gluePaths.push(packagePath);
+      }
     }
   }
 

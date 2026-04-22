@@ -267,7 +267,8 @@ async function parseResultFileForFeature(resultFile: string, featureUri: vscode.
 export async function markChildrenFromResults(
   testItem: vscode.TestItem,
   run: vscode.TestRun,
-  resultFile: string
+  resultFile: string,
+  consoleOutput?: string
 ): Promise<void> {
   try {
     if (!testItem.uri) {
@@ -361,8 +362,9 @@ export async function markChildrenFromResults(
       let message: vscode.TestMessage | undefined;
       if (!scenarioResult.passed) {
         if (scenarioResult.failedStep) {
+          const consoleSection = consoleOutput ? `\n\n─── Console Output ───\n${consoleOutput}` : '';
           message = new vscode.TestMessage(
-            `${scenarioResult.failedStep.name}\n\n${scenarioResult.failedStep.errorMessage}`
+            `${scenarioResult.failedStep.name}\n\n${scenarioResult.failedStep.errorMessage}${consoleSection}`
           );
 
           if (matchedExample.uri) {
@@ -419,7 +421,7 @@ export async function markChildrenFromResults(
   }
 }
 
-export async function getTestErrorMessages(resultFile: string, uri?: vscode.Uri): Promise<vscode.TestMessage[]> {
+export async function getTestErrorMessages(resultFile: string, uri?: vscode.Uri, consoleOutput?: string): Promise<vscode.TestMessage[]> {
   const messages: vscode.TestMessage[] = [];
 
   if (!uri) {
@@ -436,8 +438,9 @@ export async function getTestErrorMessages(resultFile: string, uri?: vscode.Uri)
           scenarioResult.failedStep.name.includes('Scenario Setup Error') ||
           scenarioResult.failedStep.name.includes('Empty Scenario');
 
+        const consoleSection = consoleOutput ? `\n\n─── Console Output ───\n${consoleOutput}` : '';
         const message = new vscode.TestMessage(
-          `Scenario: ${scenarioResult.name} (line ${scenarioResult.line})\n\n${scenarioResult.failedStep.name}\n\n${scenarioResult.failedStep.errorMessage}`
+          `Scenario: ${scenarioResult.name} (line ${scenarioResult.line})\n\n${scenarioResult.failedStep.name}\n\n${scenarioResult.failedStep.errorMessage}${consoleSection}`
         );
 
         if (uri) {
