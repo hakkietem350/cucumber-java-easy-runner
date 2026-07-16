@@ -27,6 +27,49 @@ function mavenSettingsFlag(projectRoot: string): string {
   return ` -s "${escaped}"`;
 }
 
+/**
+ * Resolve Maven executable for Extension Host (PATH often lacks Homebrew/Pleiades mvn).
+ * Prefer VS Code / Cursor `maven.executable.path`, then common install locations, then `mvn`.
+ */
+function resolveMavenExecutable(): string {
+  const configured = vscode.workspace.getConfiguration('maven').get<string>('executable.path');
+  if (configured && configured.trim().length > 0) {
+    const configuredPath = configured.trim();
+    if (fs.existsSync(configuredPath)) {
+      logger.info(`Using maven.executable.path: ${configuredPath}`);
+      return configuredPath;
+    }
+    logger.warn(`maven.executable.path is set but not found: ${configuredPath}`);
+  }
+
+  const candidates = [
+    '/opt/homebrew/bin/mvn',
+    '/usr/local/bin/mvn',
+    path.join(os.homedir(), 'Library/Application Support/Cursor/User/globalStorage/pleiades.java-extension-pack-jdk/maven/latest/bin/mvn'),
+    path.join(os.homedir(), 'Library/Application Support/Code/User/globalStorage/pleiades.java-extension-pack-jdk/maven/latest/bin/mvn'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      logger.info(`Using Maven from fallback path: ${candidate}`);
+      return candidate;
+    }
+  }
+
+  logger.warn('Maven executable not found via settings or common paths; falling back to "mvn" on PATH');
+  return 'mvn';
+}
+
+function quoteShellArg(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function buildMavenCommand(args: string): string {
+  const mvn = resolveMavenExecutable();
+  const mvnPart = mvn === 'mvn' ? 'mvn' : quoteShellArg(mvn);
+  return `${mvnPart}${args}`;
+}
+
 // ─── @CucumberOptions parser ─────────────────────────────────────────────────
 
 function collectJavaFiles(dir: string): string[] {
@@ -107,9 +150,10 @@ async function compileMavenProject(projectRoot: string): Promise<boolean> {
 
   return new Promise((resolve) => {
     const settings = mavenSettingsFlag(projectRoot);
-    const command = `mvn${settings} compile test-compile -Dmaven.compiler.useIncrementalCompilation=true -q`;
+    const command = buildMavenCommand(`${settings} compile test-compile -Dmaven.compiler.useIncrementalCompilation=true -q`);
 
     logger.info('Ensuring Maven project is compiled (incremental)...');
+    logger.debug(`Maven compile command: ${command}`);
 
     exec(command, { cwd: projectRoot }, (error, stdout, stderr) => {
       if (error) {
@@ -194,7 +238,10 @@ export async function resolveMavenClasspath(projectRoot: string): Promise<string
 
   return new Promise((resolve) => {
     const settings = mavenSettingsFlag(projectRoot);
-    const command = `mvn${settings} dependency:build-classpath -DincludeScope=test -q -Dmdep.outputFile=/dev/stdout`;
+    const command = buildMavenCommand(`${settings} dependency:build-classpath -DincludeScope=test -q -Dmdep.outputFile=/dev/stdout`);
+
+    logger.info('Resolving Maven classpath...');
+    logger.debug(`Maven classpath command: ${command}`);
 
     exec(command, { cwd: projectRoot }, (error, stdout, stderr) => {
       const classPaths: string[] = [
