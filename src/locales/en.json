@@ -20,7 +20,7 @@
     "config": {
       "title": "Cucumber Java Easy Runner",
       "enableCodeLens": "Enable CodeLens buttons in feature files. When disabled, use Test Explorer for a cleaner interface.",
-      "autoCompileMaven": "Run 'mvn compile test-compile' before running tests. Enable if you want the extension to auto-compile your project.",
+      "autoCompileMaven": "Run 'mvn test-compile' before running tests (combined with dependency resolution in a single Maven invocation). Enable if you want the extension to auto-compile your project.",
       "additionalGluePaths": "Extra glue paths (Java packages) containing step definitions. Useful when steps are in shared libraries.",
       "excludeBuildDirectories": "Directories excluded when discovering feature files to avoid duplicates.",
       "objectFactory": "Custom Cucumber object factory (e.g. 'cucumber.api.spring.SpringFactory').",
@@ -47,7 +47,8 @@
     "testFailed": "Test failed",
     "scenarioFailed": "Scenario failed",
     "debugFailed": "Failed to start debug session. Make sure you have the Java debugger extension installed.",
-    "testSessionFailed": "Failed to start test session. Make sure you have the Java debugger extension installed."
+    "testSessionFailed": "Failed to start test session. Make sure you have the Java debugger extension installed.",
+    "cucumberCoreNotFound": "io.cucumber:cucumber-core was not found on the Maven classpath. Make sure Cucumber is declared in pom.xml (test scope) and dependencies are downloaded (run 'mvn dependency:resolve')."
   },
   "info": {
     "featureTestStarting": "Feature test starting...",

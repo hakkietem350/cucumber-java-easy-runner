@@ -11,7 +11,7 @@ A VS Code extension that seamlessly integrates Cucumber feature files with VS Co
 - 📊 **Status Bar**: Real-time test count and execution status in the status bar
 - 🔄 **Auto-discovery**: Automatically finds and displays all feature files in your workspace
 - 🚫 **Smart Filtering**: Excludes build directories (target, build, out) to prevent duplicate tests
-- ⚡ **Fast Refresh**: Instantly refresh test list when new features are added
+- ⚡ **Fast Startup**: Maven classpath is resolved once and cached until `pom.xml` changes; runs for the same project are queued, never stacked
 - 🔧 **Auto-configuration**: Automatically detects glue path, no manual setup required
 - 📋 **Optional CodeLens**: Enable traditional play buttons in feature files if preferred
 - 🌍 **Internationalization**: Available in English and Turkish
@@ -62,6 +62,8 @@ Debug your Cucumber tests with full breakpoint support:
 1. **Set Breakpoints**: Add breakpoints in your Java step definition files
 2. **Start Debug**: Click the debug icon in Test Explorer or use "Debug" from context menu
 3. **Inspect Variables**: Use VS Code's debug panel to inspect variables and step through code
+
+Debug runs share the same classpath cache as normal runs, so a second debug session starts without any Maven overhead. When the [Language Support for Java](https://marketplace.visualstudio.com/items?itemName=redhat.java) extension is installed, it already compiles your sources to `target/classes` / `target/test-classes` on save — so `autoCompileMaven` is normally **not** needed for debugging (breakpoints always match the JDT-compiled classes).
 
 Available debug commands:
 - `Cucumber: Debug Feature` - Debug entire feature file
@@ -138,17 +140,30 @@ Configure the extension behavior in VS Code Settings:
     ".git"
   ],
   "cucumberJavaEasyRunner.objectFactory": "",
-  "cucumberJavaEasyRunner.logLevel": "info"
+  "cucumberJavaEasyRunner.logLevel": "info",
+  "cucumberJavaEasyRunner.vmArgs": ""
 }
 ```
 
 **Settings Options:**
 - `enableCodeLens` (boolean, default: false): Show play buttons in feature files. When disabled, use Test Explorer for a cleaner interface.
-- `autoCompileMaven` (boolean, default: false): If `true`, runs `mvn compile test-compile` before each execution. Leave `false` when you handle builds yourself for faster runs.
+- `autoCompileMaven` (boolean, default: false): If `true`, runs `mvn test-compile` before executing tests — combined with dependency resolution into a **single Maven invocation** to keep startup fast. Leave `false` when the Java extension's automatic build (or your own `mvn` runs) keeps `target/` up to date.
 - `additionalGluePaths` (string array, default: `[]`): Extra Java package names that contain step definitions (useful for shared modules).
 - `excludeBuildDirectories` (string array): Directories ignored during feature discovery. Customize if your build output uses different folder names.
 - `objectFactory` (string, optional): Custom Cucumber object factory class (e.g., `cucumber.api.spring.SpringFactory`).
 - `logLevel` (string, default: "info"): Controls the verbosity of extension logs in the Output panel. Options: `error`, `warn`, `info`, `debug`, `trace`.
+- `vmArgs` (string, default: `""`): Additional JVM arguments passed to the Cucumber runner process (e.g., `-DisLogOn=true`).
+
+## 🏃 How Tests Execute
+
+For each run (and debug) the extension:
+
+1. **Resolves the test classpath** via `mvn dependency:build-classpath`. The result is cached and reused until `pom.xml` changes — subsequent runs skip Maven entirely. Failed resolutions are never cached, so one broken Maven run cannot poison later runs.
+2. **Optionally compiles** (`mvn test-compile`) only when `autoCompileMaven` is enabled; in that case compilation is merged into the same Maven call.
+3. **Queues concurrent runs**: clicking Run while a previous run is still resolving or executing will queue the new run instead of starting a second Maven/Java process in parallel.
+4. **Launches `io.cucumber.core.cli.Main`** with the resolved classpath and reports results from the Cucumber JSON output into Test Explorer.
+
+Maven invocations have a 15-minute timeout and test executions a 10-minute timeout, so a hung process can never block your workspace forever. If `io.cucumber:cucumber-core` is missing from the classpath, the extension fails fast with a clear message instead of an opaque Java error.
 
 ## 📦 Installation
 
@@ -215,6 +230,13 @@ The language is automatically selected based on your VS Code display language se
 - Verify Maven project structure
 - Check Cucumber dependencies in pom.xml
 - Ensure Java and Maven are properly installed
+
+**Tests start slowly or don't start:**
+- The first run after a `pom.xml` change resolves the Maven classpath — this is a one-time cost; later runs reuse the cache. Check the "Cucumber Java Runner" Output panel to see which phase is slow.
+- If you see *"io.cucumber:cucumber-core was not found on the Maven classpath"*, Cucumber is missing from `pom.xml` (test scope) or dependencies are not downloaded — run `mvn dependency:resolve`.
+- Maven runs are killed after 15 minutes if they hang (e.g., unreachable repository). Test the same `mvn` command in a terminal to find the root cause.
+- If Maven is not found, set `maven.executable.path` in VS Code settings — the extension respects it (and also probes Homebrew and the Pleiades Java pack locations automatically).
+- Make sure the Java extension's build has completed (no red squiggles in step definitions) before running.
 
 **Debug not working:**
 - Make sure you have the [Debugger for Java](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-debug) extension installed

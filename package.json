@@ -2,7 +2,7 @@
   "name": "cucumber-java-easy-runner",
   "displayName": "%ext.displayName%",
   "description": "%ext.description%",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "publisher": "HakkiEtem",
   "author": {
     "name": "Hakki Etem"

@@ -346,7 +346,12 @@ export class CucumberTestExplorer {
     try {
       // Prepare features for batch execution
       const features: FeatureToRun[] = [];
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      // Use the folder containing the first test item; workspaceFolders[0] is
+      // the wrong root in multi-root workspaces.
+      const firstUri = testItems.find(item => item.uri)?.uri;
+      const workspaceFolder =
+        (firstUri ? vscode.workspace.getWorkspaceFolder(firstUri) : undefined) ??
+        vscode.workspace.workspaceFolders?.[0];
 
       if (!workspaceFolder) {
         for (const item of testItems) {

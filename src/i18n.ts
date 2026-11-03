@@ -48,6 +48,7 @@ export const messages = {
   errorScenarioFailed: locale.errors.scenarioFailed,
   errorDebugFailed: locale.errors.debugFailed,
   errorTestSessionFailed: locale.errors.testSessionFailed,
+  errorCucumberCoreNotFound: locale.errors.cucumberCoreNotFound,
 
   // Info messages
   infoFeatureTestStarting: locale.info.featureTestStarting,

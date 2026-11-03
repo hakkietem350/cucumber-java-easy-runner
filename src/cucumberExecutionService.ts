@@ -63,6 +63,21 @@ function getRunTerminal(): { terminal: vscode.Terminal; pty: RunOutputPty } {
   return { terminal: _runTerminal, pty: _runPty! };
 }
 
+const runQueues = new Map<string, Promise<unknown>>();
+
+function serializeRun<T>(projectRoot: string, task: () => Promise<T>): Promise<T> {
+  const previous = runQueues.get(projectRoot) ?? Promise.resolve();
+  const current = previous.then(task, task);
+  const guard = current.catch(() => undefined);
+  runQueues.set(projectRoot, guard);
+  guard.then(() => {
+    if (runQueues.get(projectRoot) === guard) {
+      runQueues.delete(projectRoot);
+    }
+  });
+  return current;
+}
+
 export async function runCucumberTestBatch(
   features: FeatureToRun[],
   isDebug = false
@@ -79,39 +94,41 @@ export async function runCucumberTestBatch(
 
   const projectRoot = workspaceFolder.uri.fsPath;
 
-  try {
-    const gluePaths = await findGluePath(projectRoot);
+  return serializeRun(projectRoot, async () => {
+    try {
+      const gluePaths = await findGluePath(projectRoot);
 
-    if (!gluePaths) {
-      const userInput = await vscode.window.showInputBox({
-        prompt: messages.promptGluePath,
-        placeHolder: messages.promptGluePathPlaceholder
-      });
+      if (!gluePaths) {
+        const userInput = await vscode.window.showInputBox({
+          prompt: messages.promptGluePath,
+          placeHolder: messages.promptGluePathPlaceholder
+        });
 
-      if (!userInput) {
-        vscode.window.showErrorMessage(messages.errorGluePathNotSpecified);
-        return { passed: false };
+        if (!userInput) {
+          vscode.window.showErrorMessage(messages.errorGluePathNotSpecified);
+          return { passed: false };
+        }
+
+        return await executeCucumberTestBatch(
+          projectRoot,
+          features,
+          [userInput],
+          isDebug
+        );
+      } else {
+        return await executeCucumberTestBatch(
+          projectRoot,
+          features,
+          gluePaths,
+          isDebug
+        );
       }
-
-      return await executeCucumberTestBatch(
-        projectRoot,
-        features,
-        [userInput],
-        isDebug
-      );
-    } else {
-      return await executeCucumberTestBatch(
-        projectRoot,
-        features,
-        gluePaths,
-        isDebug
-      );
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      vscode.window.showErrorMessage(`Error: ${errorMessage}`);
+      return { passed: false };
     }
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    vscode.window.showErrorMessage(`Error: ${errorMessage}`);
-    return { passed: false };
-  }
+  });
 }
 
 export async function runCucumberTest(
@@ -161,7 +178,11 @@ async function executeCucumberTestBatch(
     configName = `${configPrefix}All Features (${features.length} files)`;
   }
 
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  // Use the workspace folder that actually contains the feature file
+  // (workspaceFolders[0] can be the wrong root in multi-root workspaces).
+  const workspaceFolder =
+    vscode.workspace.getWorkspaceFolder(features[0].uri) ??
+    vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     vscode.window.showErrorMessage(messages.errorNoWorkspace);
     return { passed: false };
@@ -172,6 +193,20 @@ async function executeCucumberTestBatch(
     title: paramMessages.compilingFeatures(features.length),
     cancellable: false
   }, async () => await resolveMavenClasspath(projectRoot));
+
+  // Fail fast with a clear message instead of letting java exit silently with
+  // "Could not find or load main class io.cucumber.core.cli.Main".
+  if (!classPaths.some(p => /cucumber-core/i.test(p))) {
+    const errorMsg = messages.errorCucumberCoreNotFound;
+    logger.error(errorMsg);
+    const { terminal, pty } = getRunTerminal();
+    pty.clear();
+    terminal.show(true);
+    pty.write(`▶ ${configName}\r\n`);
+    pty.write(`✖ ${errorMsg}\r\n`);
+    vscode.window.showErrorMessage(errorMsg);
+    return { passed: false };
+  }
 
   const resultFile = path.join(projectRoot, 'target', `.cucumber-result-${Date.now()}.json`);
 
@@ -189,16 +224,18 @@ async function executeCucumberTestBatch(
     }
 
     return cucumberPath;
-  }).join(' ');
+  });
 
-  const cucumberArgs = [
+  // Keep arguments as an array: splitting a joined command string on whitespace
+  // corrupts paths that contain spaces (feature files, glue paths, temp dirs).
+  const cucumberArgs: string[] = [
     ...gluePaths.flatMap(gluePath => ['--glue', gluePath]),
     '--plugin', 'pretty',
     ...(!isDebug ? ['--monochrome'] : []),
     '--plugin', `json:${resultFile}`,
     ...(customObjectFactory ? ['--object-factory', customObjectFactory] : []),
-    cucumberPaths
-  ].join(' ');
+    ...cucumberPaths
+  ];
 
   if (isDebug) {
     return await runWithVSCode(workspaceFolder, configName, classPaths, cucumberArgs, projectRoot, resultFile, customVmArgs);
@@ -213,7 +250,7 @@ async function runWithProcess(
   workspaceFolder: vscode.WorkspaceFolder,
   configName: string,
   classPaths: string[],
-  cucumberArgs: string,
+  cucumberArgs: string[],
   projectRoot: string,
   resultFile: string,
   customVmArgs: string
@@ -233,6 +270,17 @@ async function runWithProcess(
   const outputLines: string[] = [];
 
   return new Promise<TestExecutionResult>((resolve) => {
+    let settled = false;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+
+    const finish = (result: TestExecutionResult) => {
+      if (settled) { return; }
+      settled = true;
+      if (timeoutHandle) { clearTimeout(timeoutHandle); }
+      if (argFilePath) { tryDeleteFile(argFilePath); }
+      resolve(result);
+    };
+
     const proc = spawn(javaExecutable, args, {
       cwd: projectRoot,
       env: { ...process.env }
@@ -251,20 +299,17 @@ async function runWithProcess(
       const msg = `Failed to start Java process: ${err.message}`;
       pty.write(msg + '\r\n');
       logger.error(msg);
-      if (argFilePath) { tryDeleteFile(argFilePath); }
-      resolve({ passed: false, consoleOutput: outputLines.join('') });
+      finish({ passed: false, consoleOutput: outputLines.join('') });
     });
 
     proc.on('close', async (code) => {
       pty.write('─'.repeat(60) + '\r\n');
       pty.write(`Process exited with code ${code}\r\n`);
 
-      if (argFilePath) { tryDeleteFile(argFilePath); }
-
       const consoleOutput = outputLines.join('');
       const testPassed = await checkCucumberResults(resultFile);
 
-      resolve({
+      finish({
         passed: testPassed,
         resultFile: resultFile,
         consoleOutput: consoleOutput
@@ -272,46 +317,48 @@ async function runWithProcess(
     });
 
     // Timeout after 10 minutes
-    setTimeout(() => {
+    timeoutHandle = setTimeout(() => {
       proc.kill();
       logger.warn('Test execution timeout after 10 minutes');
-      if (argFilePath) { tryDeleteFile(argFilePath); }
-      resolve({ passed: false, consoleOutput: outputLines.join('') });
+      pty.write('✖ Test execution timed out after 10 minutes.\r\n');
+      finish({ passed: false, consoleOutput: outputLines.join('') });
     }, 600000);
   });
 }
 
-function buildJavaArgs(classPaths: string[], cucumberArgs: string, customVmArgs: string): string[] {
+function buildJavaArgs(classPaths: string[], cucumberArgs: string[], customVmArgs: string): string[] {
   const vmArgsList = `-Dfile.encoding=UTF-8 ${customVmArgs}`.trim().split(/\s+/).filter(Boolean);
   const cpStr = classPaths.join(path.delimiter);
   return [
     ...vmArgsList,
     '-cp', cpStr,
     'io.cucumber.core.cli.Main',
-    ...cucumberArgs.split(/\s+/).filter(Boolean)
+    ...cucumberArgs
   ];
 }
 
 async function writeArgFile(
   projectRoot: string,
   classPaths: string[],
-  cucumberArgs: string,
+  cucumberArgs: string[],
   customVmArgs: string
 ): Promise<string | undefined> {
   try {
     const vmArgsList = `-Dfile.encoding=UTF-8 ${customVmArgs}`.trim().split(/\s+/).filter(Boolean);
     const cpStr = classPaths.map(p => `"${p.replace(/\\/g, '/')}"`).join(path.delimiter);
-    const cucumberArgsList = cucumberArgs.split(/\s+/).filter(Boolean).map(a => `"${a}"`);
+    // Quote each Cucumber argument: java argfiles split unquoted tokens on whitespace,
+    // which corrupts feature/glue paths containing spaces.
+    const quotedArgs = cucumberArgs.map(a => `"${a}"`);
 
     const content = [
       ...vmArgsList,
       `-cp`,
       cpStr,
       `io.cucumber.core.cli.Main`,
-      ...cucumberArgsList
+      ...quotedArgs
     ].join('\n');
 
-    const argFilePath = path.join(os.tmpdir(), `.cucumber-args-${Date.now()}.txt`);
+    const argFilePath = path.join(os.tmpdir(), `.cucumber-args-${process.pid}-${Date.now()}.txt`);
     fs.writeFileSync(argFilePath, content, 'utf-8');
     logger.debug(`Wrote argfile: ${argFilePath}`);
     return argFilePath;
@@ -343,7 +390,7 @@ async function runWithVSCode(
   workspaceFolder: vscode.WorkspaceFolder,
   configName: string,
   classPaths: string[],
-  cucumberArgs: string,
+  cucumberArgs: string[],
   projectRoot: string,
   resultFile: string,
   customVmArgs: string
@@ -354,7 +401,7 @@ async function runWithVSCode(
     request: 'launch',
     mainClass: 'io.cucumber.core.cli.Main',
     cwd: projectRoot,
-    args: cucumberArgs,
+    args: toDebugArgString(cucumberArgs),
     classPaths: classPaths,
     vmArgs: `-Dfile.encoding=UTF-8 ${customVmArgs}`.trim(),
     console: 'integratedTerminal',
@@ -372,10 +419,23 @@ async function runWithVSCode(
   }
 
   return await new Promise<TestExecutionResult>((resolve) => {
+    let settled = false;
+    const timeoutHandle = setTimeout(() => {
+      disposable.dispose();
+      logger.warn('Debug test execution timeout after 30 minutes');
+      if (!settled) {
+        settled = true;
+        resolve({ passed: false });
+      }
+    }, 1800000);
+
     const disposable = vscode.debug.onDidTerminateDebugSession(async (session) => {
       if (session.name === configName) {
         disposable.dispose();
+        clearTimeout(timeoutHandle);
 
+        if (settled) { return; }
+        settled = true;
         const testPassed = await checkCucumberResults(resultFile);
 
         resolve({
@@ -384,13 +444,12 @@ async function runWithVSCode(
         });
       }
     });
-
-    setTimeout(() => {
-      disposable.dispose();
-      logger.warn('Test execution timeout after 10 minutes');
-      resolve({ passed: false });
-    }, 600000);
   });
+}
+
+/** Serialize args for the Java debug config string, quoting values with spaces. */
+function toDebugArgString(args: string[]): string {
+  return args.map(a => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ');
 }
 
 async function waitForValidJsonFile(filePath: string, maxAttempts = 20, delayMs = 500): Promise<boolean> {

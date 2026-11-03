@@ -20,7 +20,7 @@
     "config": {
       "title": "Cucumber Java Kolay Çalıştırıcı",
       "enableCodeLens": "Feature dosyalarında CodeLens butonlarını etkinleştir. Devre dışı bırakıldığında, daha temiz bir arayüz için Test Explorer kullanın.",
-      "autoCompileMaven": "Testleri çalıştırmadan önce 'mvn compile test-compile' komutunu çalıştır. Eklentinin projeyi otomatik derlemesini istiyorsanız etkinleştirin.",
+      "autoCompileMaven": "Testleri çalıştırmadan önce 'mvn test-compile' komutunu çalıştır (bağımlılık çözümlemesiyle tek Maven çağrısında birleştirilir). Eklentinin projeyi otomatik derlemesini istiyorsanız etkinleştirin.",
       "additionalGluePaths": "Step tanımlarını içeren ekstra glue yolları (Java paketleri). Adımlar paylaşılan kütüphanelerde olduğunda kullanışlıdır.",
       "excludeBuildDirectories": "Feature dosyalarını keşfederken yinelenenleri önlemek için hariç tutulan dizinler.",
       "objectFactory": "Özel Cucumber object factory (örn. 'cucumber.api.spring.SpringFactory').",
@@ -47,7 +47,8 @@
     "testFailed": "Test başarısız",
     "scenarioFailed": "Senaryo başarısız",
     "debugFailed": "Debug oturumu başlatılamadı. Java debugger eklentisinin yüklü olduğundan emin olun.",
-    "testSessionFailed": "Test oturumu başlatılamadı. Java debugger eklentisinin yüklü olduğundan emin olun."
+    "testSessionFailed": "Test oturumu başlatılamadı. Java debugger eklentisinin yüklü olduğundan emin olun.",
+    "cucumberCoreNotFound": "Maven sınıf yolunda io.cucumber:cucumber-core bulunamadı. Cucumber'ın pom.xml içinde (test kapsamında) tanımlı olduğundan ve bağımlılıkların indirildiğinden emin olun ('mvn dependency:resolve' çalıştırın)."
   },
   "info": {
     "featureTestStarting": "Feature testi başlatılıyor...",

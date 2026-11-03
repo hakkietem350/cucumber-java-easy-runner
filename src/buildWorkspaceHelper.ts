@@ -12,6 +12,35 @@ interface CachedClasspath {
 }
 const classpathCache = new Map<string, CachedClasspath>();
 
+const MAVEN_TIMEOUT_MS = 15 * 60 * 1000;
+const MAVEN_MAX_BUFFER = 32 * 1024 * 1024;
+
+interface MavenExecError extends Error {
+  killed?: boolean;
+  stderr?: string;
+}
+
+function execCommand(command: string, cwd: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolveExec, rejectExec) => {
+    exec(
+      command,
+      { cwd, maxBuffer: MAVEN_MAX_BUFFER, timeout: MAVEN_TIMEOUT_MS, killSignal: 'SIGKILL' },
+      (error, stdout, stderr) => {
+        if (error) {
+          const wrapped: MavenExecError = Object.assign(new Error(error.message), {
+            killed: error.killed,
+            stderr: stderr
+          });
+          logger.debug(`Command failed (killed=${Boolean(error.killed)}): ${command}`);
+          rejectExec(wrapped);
+        } else {
+          resolveExec({ stdout, stderr });
+        }
+      }
+    );
+  });
+}
+
 function getPomMtime(projectRoot: string): number {
   try {
     return fs.statSync(path.join(projectRoot, 'pom.xml')).mtimeMs;
@@ -141,36 +170,34 @@ function findGlueFromRunnerClass(projectRoot: string): string[] | null {
 
 async function compileMavenProject(projectRoot: string): Promise<boolean> {
   const config = vscode.workspace.getConfiguration('cucumberJavaEasyRunner');
-  const autoCompileMaven = config.get<boolean>('autoCompileMaven', true);
+  const autoCompileMaven = config.get<boolean>('autoCompileMaven', false);
 
   if (!autoCompileMaven) {
     logger.info('Auto-compilation is disabled in settings');
     return true;
   }
 
-  return new Promise((resolve) => {
-    const settings = mavenSettingsFlag(projectRoot);
-    const command = buildMavenCommand(`${settings} compile test-compile -Dmaven.compiler.useIncrementalCompilation=true -q`);
+  const settings = mavenSettingsFlag(projectRoot);
+  const command = buildMavenCommand(`${settings} test-compile -Dmaven.compiler.useIncrementalCompilation=false -q`);
 
-    logger.info('Ensuring Maven project is compiled (incremental)...');
-    logger.debug(`Maven compile command: ${command}`);
+  logger.info('Ensuring Maven project is compiled (incremental)...');
+  logger.debug(`Maven compile command: ${command}`);
 
-    exec(command, { cwd: projectRoot }, (error, stdout, stderr) => {
-      if (error) {
-        logger.error('Error compiling Maven project:', error);
-        logger.error('stderr:', stderr);
-        logger.debug('stdout:', stdout);
-        resolve(false);
-        return;
-      }
-
-      logger.info('Maven project compilation completed');
-      if (stdout) {
-        logger.debug('Maven output:', stdout);
-      }
-      resolve(true);
-    });
-  });
+  try {
+    const { stdout } = await execCommand(command, projectRoot);
+    logger.info('Maven project compilation completed');
+    if (stdout) {
+      logger.debug('Maven output:', stdout);
+    }
+    return true;
+  } catch (error) {
+    const mavenError = error as MavenExecError;
+    logger.error('Error compiling Maven project:', mavenError.message);
+    if (mavenError.stderr) {
+      logger.error('stderr:', mavenError.stderr);
+    }
+    return false;
+  }
 }
 
 function fixSlf4jBinding(classPaths: string[]): string[] {
@@ -222,100 +249,152 @@ function fixSlf4jBinding(classPaths: string[]): string[] {
   return classPaths;
 }
 
-export async function resolveMavenClasspath(projectRoot: string): Promise<string[]> {
-  // Return cached classpath if pom.xml hasn't changed since last resolve
+function getProjectClasspathRoots(projectRoot: string): string[] {
+  const classPaths: string[] = [
+    path.join(projectRoot, 'target', 'test-classes'),
+    path.join(projectRoot, 'target', 'classes')
+  ];
+
+  // Add generated-sources subdirectories as classpath roots
+  // For package "atf.generated.models", classpath root should be "target/generated-sources/swagger"
+  const generatedSourcesDir = path.join(projectRoot, 'target', 'generated-sources');
+  if (fs.existsSync(generatedSourcesDir)) {
+    try {
+      const entries = fs.readdirSync(generatedSourcesDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const subDir = path.join(generatedSourcesDir, entry.name);
+          // Add subdirectories (swagger, annotations, etc.) as classpath roots
+          classPaths.push(subDir);
+          logger.debug(`Added generated-sources classpath: ${subDir}`);
+
+          // Check for java/main structure (some generators use this)
+          const javaMainPath = path.join(subDir, 'java', 'main');
+          if (fs.existsSync(javaMainPath)) {
+            classPaths.push(javaMainPath);
+          }
+          const javaPath = path.join(subDir, 'java');
+          if (fs.existsSync(javaPath)) {
+            classPaths.push(javaPath);
+          }
+        }
+      }
+    } catch (err) {
+      logger.debug('Error scanning generated-sources:', err);
+    }
+  }
+
+  // Also check generated-test-sources
+  const generatedTestSourcesDir = path.join(projectRoot, 'target', 'generated-test-sources');
+  if (fs.existsSync(generatedTestSourcesDir)) {
+    try {
+      const entries = fs.readdirSync(generatedTestSourcesDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          classPaths.push(path.join(generatedTestSourcesDir, entry.name));
+        }
+      }
+    } catch (err) {
+      logger.debug('Error scanning generated-test-sources:', err);
+    }
+  }
+
+  return classPaths;
+}
+
+function getCachedClasspath(projectRoot: string): string[] | undefined {
   const currentMtime = getPomMtime(projectRoot);
   const cached = classpathCache.get(projectRoot);
   if (cached && cached.pomMtime === currentMtime && currentMtime !== 0) {
     logger.info('Using cached Maven classpath (pom.xml unchanged)');
     return cached.classPaths;
   }
+  return undefined;
+}
 
-  const compiled = await compileMavenProject(projectRoot);
-  if (!compiled) {
-    logger.warn('Maven compilation failed, but continuing with classpath resolution...');
+export async function resolveMavenClasspath(projectRoot: string): Promise<string[]> {
+  const config = vscode.workspace.getConfiguration('cucumberJavaEasyRunner');
+  const autoCompileMaven = config.get<boolean>('autoCompileMaven', false);
+
+  const cached = getCachedClasspath(projectRoot);
+  if (cached) {
+    // pom.xml unchanged: the dependency list is still valid, but sources may
+    // have changed - compile anyway when auto-compile is enabled (previously
+    // this path skipped compilation entirely and ran stale classes).
+    if (autoCompileMaven) {
+      await compileMavenProject(projectRoot);
+    }
+    return cached;
   }
 
-  return new Promise((resolve) => {
-    const settings = mavenSettingsFlag(projectRoot);
-    const command = buildMavenCommand(`${settings} dependency:build-classpath -DincludeScope=test -q -Dmdep.outputFile=/dev/stdout`);
+  const settings = mavenSettingsFlag(projectRoot);
+  const outputFile = path.join(os.tmpdir(), `cucumber-cp-${process.pid}-${Date.now()}.txt`);
+  const goals = autoCompileMaven ? 'test-compile dependency:build-classpath' : 'dependency:build-classpath';
+  const command = buildMavenCommand(
+    `${settings} ${goals} -DincludeScope=test -q -Dmdep.outputFile=${quoteShellArg(outputFile)}`
+  );
 
-    logger.info('Resolving Maven classpath...');
-    logger.debug(`Maven classpath command: ${command}`);
+  logger.info('Resolving Maven classpath...');
+  logger.debug(`Maven classpath command: ${command}`);
 
-    exec(command, { cwd: projectRoot }, (error, stdout, stderr) => {
-      const classPaths: string[] = [
-        path.join(projectRoot, 'target', 'test-classes'),
-        path.join(projectRoot, 'target', 'classes')
-      ];
+  let dependencyOutput = '';
+  try {
+    const { stdout } = await execCommand(command, projectRoot);
+    dependencyOutput = tryReadClasspathFile(outputFile) || stdout.trim();
+  } catch (error) {
+    const mavenError = error as MavenExecError;
+    if (mavenError.killed) {
+      logger.error(`Maven timed out after ${MAVEN_TIMEOUT_MS / 60000} minute(s) and was killed.`);
+    }
+    logger.error('Error resolving Maven classpath:', mavenError.message);
+    if (mavenError.stderr) {
+      logger.error('stderr:', mavenError.stderr);
+    }
 
-      // Add generated-sources subdirectories as classpath roots
-      // For package "atf.generated.models", classpath root should be "target/generated-sources/swagger"
-      const generatedSourcesDir = path.join(projectRoot, 'target', 'generated-sources');
-      if (fs.existsSync(generatedSourcesDir)) {
-        try {
-          const entries = fs.readdirSync(generatedSourcesDir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.isDirectory()) {
-              const subDir = path.join(generatedSourcesDir, entry.name);
-              // Add subdirectories (swagger, annotations, etc.) as classpath roots
-              classPaths.push(subDir);
-              logger.debug(`Added generated-sources classpath: ${subDir}`);
-
-              // Check for java/main structure (some generators use this)
-              const javaMainPath = path.join(subDir, 'java', 'main');
-              if (fs.existsSync(javaMainPath)) {
-                classPaths.push(javaMainPath);
-              }
-              const javaPath = path.join(subDir, 'java');
-              if (fs.existsSync(javaPath)) {
-                classPaths.push(javaPath);
-              }
-            }
-          }
-        } catch (err) {
-          logger.debug('Error scanning generated-sources:', err);
-        }
+    if (autoCompileMaven) {
+      try {
+        logger.warn('Retrying classpath resolution without compilation...');
+        const retryCommand = buildMavenCommand(
+          `${settings} dependency:build-classpath -DincludeScope=test -q -Dmdep.outputFile=${quoteShellArg(outputFile)}`
+        );
+        const { stdout } = await execCommand(retryCommand, projectRoot);
+        dependencyOutput = tryReadClasspathFile(outputFile) || stdout.trim();
+      } catch (retryError) {
+        logger.error('Classpath resolution retry also failed:', retryError);
       }
+    }
+  } finally {
+    try { fs.unlinkSync(outputFile); } catch { /* ignore */ }
+  }
 
-      // Also check generated-test-sources
-      const generatedTestSourcesDir = path.join(projectRoot, 'target', 'generated-test-sources');
-      if (fs.existsSync(generatedTestSourcesDir)) {
-        try {
-          const entries = fs.readdirSync(generatedTestSourcesDir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.isDirectory()) {
-              classPaths.push(path.join(generatedTestSourcesDir, entry.name));
-            }
-          }
-        } catch (err) {
-          logger.debug('Error scanning generated-test-sources:', err);
-        }
-      }
+  const classPaths = getProjectClasspathRoots(projectRoot);
 
-      if (error) {
-        logger.error('Error resolving Maven classpath:', error);
-        logger.error('stderr:', stderr);
-        resolve(classPaths);
-        return;
-      }
+  if (dependencyOutput) {
+    classPaths.push(...dependencyOutput.split(path.delimiter).filter(dep => dep.trim().length > 0));
+  } else {
+    logger.error('Maven dependency classpath could not be resolved; tests will likely fail to start.');
+  }
 
-      const output = stdout.trim();
-      if (output) {
-        const dependencies = output.split(':').filter(dep => dep.trim().length > 0);
-        classPaths.push(...dependencies);
-      }
+  logger.debug(`Resolved ${classPaths.length} classpath entries from Maven`);
 
-      logger.debug(`Resolved ${classPaths.length} classpath entries from Maven`);
+  const fixedClassPaths = fixSlf4jBinding(classPaths);
 
-      const fixedClassPaths = fixSlf4jBinding(classPaths);
+  if (dependencyOutput) {
+    classpathCache.set(projectRoot, { pomMtime: getPomMtime(projectRoot), classPaths: fixedClassPaths });
+  }
 
-      // Store in cache keyed by project root
-      classpathCache.set(projectRoot, { pomMtime: currentMtime, classPaths: fixedClassPaths });
+  return fixedClassPaths;
+}
 
-      resolve(fixedClassPaths);
-    });
-  });
+function tryReadClasspathFile(filePath: string): string {
+  try {
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, 'utf-8').trim();
+    }
+  } catch (err) {
+    logger.debug('Could not read Maven classpath output file:', err);
+  }
+  return '';
 }
 
 export async function findGluePath(projectRoot: string): Promise<string[] | null> {
